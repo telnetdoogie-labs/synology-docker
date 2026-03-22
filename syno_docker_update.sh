@@ -287,9 +287,9 @@ detect_available_versions() {
 
     # Detect latest available stable Docker Compose version (ignores release candidates)
     if [ -z "${target_compose_version}" ] && [ "${skip_compose_update}" = 'false' ] ; then
-        target_compose_version=$(curl -s "${GITHUB_API_COMPOSE}" | grep "tag_name" | grep -Eo "[0-9]+.[0-9]+.[0-9]+")
+        target_compose_version=$(curl -s "${GITHUB_API_COMPOSE}" | jq -r '.tag_name | ltrimstr("v")')
 
-        if [ -z "${target_compose_version}" ] ; then
+        if [ -z "${target_compose_version}" ] || [ "${target_compose_version}" = "null" ] ; then
             echo "Could not detect Docker Compose versions available for download, setting default value"
             target_compose_version="${DEFAULT_COMPOSE_VERSION}"
         fi
@@ -357,7 +357,7 @@ validate_downloaded_versions() {
 #   Terminates with non-zero exit code if the version string does conform to the expected pattern.
 #======================================================================================================================
 validate_version_input() {
-    validation=$(echo "$1" | grep -Eo "^[0-9]+.[0-9]+.[0-9]+")
+    validation=$(echo "$1" | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+$')
     if [ "${validation}" != "$1" ] ; then
         usage
         terminate "$2"
@@ -792,13 +792,13 @@ execute_extract_backup() {
     tar -zxvf "${backup_dir}/${docker_backup_filename}"
     mv bin docker
 
-    if [ ! -d "docker" ] ; then 
+    if [ ! -d "docker" ] ; then
         terminate "Docker binaries could not be extracted from archive"
     fi
-    if [ ! -f "docker/docker-compose" ] ; then 
+    if [ ! -f "docker/docker-compose" ] ; then
         terminate "Docker compose binary could not be extracted from archive"
     fi
-    if [ ! -f "dockerd.json" ] ; then 
+    if [ ! -f "dockerd.json" ] ; then
         terminate "Log driver configuration could not be extracted from archive"
     fi
 }
@@ -817,7 +817,7 @@ execute_extract_backup() {
 #======================================================================================================================
 execute_download_compose() {
     if [ "${skip_compose_update}" = 'false' ] ; then
-        major_compose=$(echo "${target_compose_version}" | cut -d" " -f3 | cut -d "." -f1)
+        major_compose=$(echo "${target_compose_version}" | cut -d "." -f1)
         base_path="${DOWNLOAD_GITHUB}/releases/download"
         # as of version 2, the download path uses a 'v' prefix and is in lower case
         compose_bin="${base_path}/v${target_compose_version}/docker-compose-linux-${CPU_ARCH}"
@@ -828,14 +828,14 @@ execute_download_compose() {
 
         print_status "Downloading target Docker Compose binary (${compose_bin})"
         response=$(curl -L "${compose_bin}" --write-out '%{http_code}' -o "${download_dir}/docker-compose")
-        if [ "${response}" != 200 ] ; then 
+        if [ "${response}" != 200 ] ; then
             terminate "Binary could not be downloaded"
         fi
     fi
 }
 
 #======================================================================================================================
-# Install the Docker and Docker Compose binaries, unless instructed to skip installation or when 'stage' is set to 
+# Install the Docker and Docker Compose binaries, unless instructed to skip installation or when 'stage' is set to
 # true.
 #======================================================================================================================
 # Globals:
@@ -884,7 +884,7 @@ execute_restore_bin() {
         fi
         # copy Docker Engine binaries
         if [ "${skip_docker_update}" = 'false' ] ; then
-            find "${temp_dir}"/docker/ -type f \( ! -name docker-compose \) -print -exec cp -rpf '{}' "${SYNO_DOCKER_BIN}"/ ";"      
+            find "${temp_dir}"/docker/ -type f \( ! -name docker-compose \) -print -exec cp -rpf '{}' "${SYNO_DOCKER_BIN}"/ ";"
         fi
         # copy Docker Compose
         if [ "${skip_compose_update}" = 'false' ] ; then
@@ -916,7 +916,7 @@ execute_update_log() {
 }
 
 #======================================================================================================================
-# Updates Synology's start-stop-status script for Docker to ensure IP forwarding is enabled, unless 'stage' is set to 
+# Updates Synology's start-stop-status script for Docker to ensure IP forwarding is enabled, unless 'stage' is set to
 # true.
 #======================================================================================================================
 # Globals:
@@ -929,7 +929,7 @@ execute_update_script() {
     if [ "${stage}" = 'false' ]; then
         # File to edit
         file="${SYNO_DOCKER_SCRIPT}"
-        
+
         # Search and check conditions
         if ! grep -q 'iptables -P FORWARD ACCEPT' "${file}"; then
             match="^[[:space:]]*# start docker[[:space:]]*$"
@@ -1072,11 +1072,11 @@ execute_clean() {
 main() {
     # Show header
     echo "Update Docker Engine and Docker Compose on Synology to target version"
-    echo 
+    echo
 
     # Test if script has root privileges, exit otherwise
     id=$(id -u)
-    if [ "${id}" -ne 0 ]; then 
+    if [ "${id}" -ne 0 ]; then
         usage
         terminate "You need to be root to run this script"
     fi

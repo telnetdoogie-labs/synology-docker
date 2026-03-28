@@ -44,6 +44,10 @@ If you’re comfortable with SSH and `sudo`, this is for you.
 > You can absolutely break things if you ignore instructions. Always have backups.
 > Once upgraded, The ContainerManager UI will no longer work reliably for managing containers or observing logs.
 
+### DSM Version
+
+Before using this, update to the most recent version of DSM that you can. That'll avoid many issues and will make sure the minor version of your kernel is up to date. I can't keep track of all of the older minor kernel versions for each platform, that would become unmanageable. Sometimes you'll need to download the latest DSM patch manually as it may not show as an automatic update for your model. Look for your latest DSM [here](https://www.synology.com/en-br/support/download)
+
 ### Nvidia users
 
 If you use the Nvidia runtime, you may need to re‑run:

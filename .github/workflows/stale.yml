@@ -1,32 +1,25 @@
-# This workflow warns and then closes issues and PRs that have had no activity for a specified amount of time.
-#
-# You can adjust the behavior by modifying this file.
-# For more information, see:
-# https://github.com/actions/stale
-name: Mark stale issues and pull requests
-
+name: 'Close Stale Issues and PRs'
 on:
   schedule:
-  - cron: '21 0,6,12,18 * * *'
-  workflow_dispatch: # Allows manual triggering of this workflow.
+    - cron: '21 */6 * * *'
 
 jobs:
-  stale:
-
+  close-issues:
     runs-on: ubuntu-latest
     permissions:
       issues: write
       pull-requests: write
-
     steps:
-    - uses: actions/stale@v5
-      with:
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-        days-before-stale: 10
-        stale-issue-message: 'This issue has been marked as stale and will be closed'
-        close-issue-message: 'This issue has been closed for inactivity'
-        stale-pr-message: 'This PR has been marked as stale and will be closed'
-        stale-issue-label: 'stale'
-        stale-pr-label: 'stale'
-        exempt-pr-labels: 'keep-open'
-        exempt-issue-labels: 'keep-open'
+      - uses: actions/stale@v10.2.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          days-before-stale: 7
+          days-before-close: 3
+          stale-issue-label: "stale"
+          stale-pr-label: "stale"
+          exempt-pr-labels: 'keep-open'
+          exempt-issue-labels: 'keep-open'
+          stale-issue-message: "This issue has been marked as stale and will be closed if no further activity occurs."
+          stale-pr-message: "This pull request has been marked as stale and will be closed if no further activity occurs."
+          close-issue-message: "This issue has been closed after being marked as stale because no further activity occurred."
+          close-pr-message: "This pull request has been closed after being marked as stale because no further activity occurred."

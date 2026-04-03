@@ -210,7 +210,7 @@ PRs welcome.
 * Original work by [@markdumay](https://github.com/markdumay)
 * Extensive testing by [@mrmuiz](https://github.com/mrmuiz)
 * Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
-* Kernel 5.x runc issue / resolution by [@bslatyer](https://github.com/bslatyer)
+* Kernel 5.x runc issue / resolution and additional repo contributions by [@bslatyer](https://github.com/bslatyer)
 
 ---
 

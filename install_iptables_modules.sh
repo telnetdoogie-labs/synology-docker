@@ -11,10 +11,13 @@ MODULES_FOLDER="/lib/modules"
 IP4MODULE="iptable_raw.ko"
 IP6MODULE="ip6table_raw.ko"
 #Update to work with older Docker versions... untested
-if [ -d "/var/packages/ContainerManager" ]; then
+if [ -f "/var/packages/ContainerManager/scripts/start-stop-status" ]; then
     readonly FILE="/var/packages/ContainerManager/scripts/start-stop-status"
-elif [ -d "/var/packages/Docker" ]; then
+elif [ -f "/var/packages/Docker/scripts/start-stop-status" ]; then
     readonly FILE="/var/packages/Docker/scripts/start-stop-status"
+else
+    echo "Could not locate Container Manager or Docker start-stop-status script."
+    exit 1
 fi
 INSERTAFTER='iptablestool --insmod "${DockerServName}" ${InsertModules}'
 INSERT="    # Added by docker update\n"

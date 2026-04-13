@@ -10,7 +10,12 @@ fi
 MODULES_FOLDER="/lib/modules"
 IP4MODULE="iptable_raw.ko"
 IP6MODULE="ip6table_raw.ko"
-FILE="/var/packages/ContainerManager/scripts/start-stop-status"
+#Update to work with older Docker versions... untested
+if [ -d "/var/packages/ContainerManager" ]; then
+    readonly FILE="/var/packages/ContainerManager/scripts/start-stop-status"
+elif [ -d "/var/packages/Docker" ]; then
+    readonly FILE="/var/packages/Docker/scripts/start-stop-status"
+fi
 INSERTAFTER='iptablestool --insmod "${DockerServName}" ${InsertModules}'
 INSERT="    # Added by docker update\n"
 INSERT="${INSERT}   # Load raw modules\n"

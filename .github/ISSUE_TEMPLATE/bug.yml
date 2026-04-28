@@ -1,6 +1,6 @@
 name: Bug Report
 description: Report a reproducible bug.
-type: "Bug"
+labels: ["bug"]
 body:
   - type: textarea
     attributes:

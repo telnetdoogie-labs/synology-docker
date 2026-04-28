@@ -1,0 +1,43 @@
+name: Bug Report
+description: Report a reproducible bug.
+labels: ["bug"]
+body:
+  - type: textarea
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is, including any error messages.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: To reproduce
+      description: |
+        Steps to reproduce the behavior, e.g.:
+        1. The invoked command: `./syno_docker_update.sh update`
+        2. Additional steps / commands...
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Log file
+      description: Capture the entire output of the `syno_docker_update.sh` script here.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Docker daemon configuration
+      description: Capture the content of `sudo cat /var/packages/ContainerManager/etc/dockerd.json` here.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Add any other context about the problem here.

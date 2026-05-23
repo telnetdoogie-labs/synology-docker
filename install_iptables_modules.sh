@@ -79,7 +79,7 @@ modules_available_for_download() {
   if [[ $IP4_AVAIL != 1 || $IP6_AVAIL != 1 ]]; then
     # both files not available for download.
     echo "false"
-    return 1 
+    return 1
   else
     echo "true"
     return 0
@@ -102,7 +102,7 @@ check_all() {
   echo
   echo -n " - .ko files in place      ?"
   KOS_PLACED=$(module_files_present)
-  output_result $KOS_PLACED 
+  output_result $KOS_PLACED
 
   echo
   echo -n " - kernel modules loaded   ?"
@@ -123,7 +123,7 @@ check_all() {
 }
 
 download_and_place_modules() {
-  echo "Downloading and placing modules in /lib/modules folder..." 
+  echo "Downloading and placing modules in /lib/modules folder..."
   curl -sO ${IP4DL} && echo -n "." || return 1
   curl -sO ${IP6DL} && echo -n "." || return 1
   cp -f ./${IP4MODULE} ${MODULES_FOLDER}/${IP4MODULE} && echo -n "." || return 1
@@ -134,7 +134,7 @@ download_and_place_modules() {
   echo
 }
 
-install_and_validate_modules() { 
+install_and_validate_modules() {
   echo "Installing and validating the kernel modules..."
   insmod ${MODULES_FOLDER}/${IP4MODULE} && echo -n "." || return 1
   insmod ${MODULES_FOLDER}/${IP6MODULE} && echo -n "." || return 1
@@ -142,7 +142,7 @@ install_and_validate_modules() {
 }
 
 modify_script() {
-  echo "Modifying the ContainerManager startup to install modules..." 
+  echo "Modifying the ContainerManager startup to install modules..."
   match="^[[:space:]]*${INSERTAFTER}"
   sed -i "/$match/a\\$INSERT" "${FILE}"
 }
@@ -176,7 +176,7 @@ fi
 # if modules are in the correct place, let's make sure they can be loaded.
 if [[ $MODS_LOADED != "true" ]]; then
   # the modules are not loaded; we need to load them and check for validity
-  
+
   install_and_validate_modules
 
   SUCCESS=$(modules_loaded)
@@ -191,7 +191,7 @@ fi
 # Modules are valid and installed / installable. Now we need to make sure they are loaded by the start script.
 if [[ $SCRIPT_ADDED != "true" ]]; then
   # the modules aren't loaded with the start-stop-status script. We will need to modify it.
-  
+
   modify_script
 
   SUCCESS=$(start_script_loads_modules)
@@ -205,4 +205,3 @@ if [[ $SCRIPT_ADDED != "true" ]]; then
 fi
 
 check_all
-

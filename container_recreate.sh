@@ -1,14 +1,14 @@
 #!/bin/bash
 if [ "$2" == "debug" ] ; then
-	readonly DEBUG=true
+  readonly DEBUG=true
 else
-	readonly DEBUG=fale
+  readonly DEBUG=fale
 fi
 
 debug() {
-	if [ "$DEBUG" == "true" ] ; then
-		echo "DEBUG: $1"
-	fi
+  if [ "$DEBUG" == "true" ] ; then
+    echo "DEBUG: $1"
+  fi
 }
 
 # Check if a container ID or name was provided
@@ -98,4 +98,3 @@ for ((i = 1; i < ${#docker_command[@]}; i++)); do
     echo "    ${docker_command[$i]}"
   fi
 done
-

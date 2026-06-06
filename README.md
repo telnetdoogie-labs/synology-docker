@@ -31,10 +31,10 @@ This repo gives you a **repeatable, reversible, and reasonably safe** way to:
 
 - Update Docker Engine on Synology to the latest
 - Update Docker Compose
-- Escape Synology's legacy `db` log driver
+- Escape Synology’s legacy `db` log driver
 - Roll back if something goes sideways
 
-If you're comfortable with SSH and `sudo`, this is for you.
+If you’re comfortable with SSH and `sudo`, this is for you.
 
 ---
 
@@ -43,6 +43,16 @@ If you're comfortable with SSH and `sudo`, this is for you.
 > **This is not supported by Synology.**
 > You can absolutely break things if you ignore instructions. Always have backups.
 > Once upgraded, The ContainerManager UI will no longer work reliably for managing containers or observing logs.
+
+### Docker 29.x known issues
+
+> ⚠️ **Some users are experiencing Container Manager failures after updating to Docker 29.x.** This is a known issue between Synology's Container Manager and the upstream Docker 29.x release. If you run into this, roll back using:
+>
+> ```bash
+> sudo ./syno_docker_update.sh restore --backup [backup_name]
+> ```
+>
+> Until Synology or upstream Docker resolves the compatibility issue, it is recommended to pin to the latest stable 28.x release using `--docker 28.x.x`.
 
 ### DSM Version
 
@@ -65,7 +75,7 @@ Portainer currently **persists the original logging driver** used when a contain
 - Containers created with the `db` logger will _stay broken_ after upgrade
 - You **must recreate** them to switch to `local`
 
-👉 **Fix your loggers before upgrading Docker** or you'll spend hours recreating containers anyway.
+👉 **Fix your loggers before upgrading Docker** or you’ll spend hours recreating containers anyway.
 
 ---
 
@@ -98,7 +108,7 @@ cd synology-docker
 
 > **TL;DR:** Fix logging → recreate containers → upgrade Docker
 
-### Step 1: Switch Docker's default log driver
+### Step 1: Switch Docker’s default log driver
 
 ```bash
 sudo ./syno_docker_update.sh logger
@@ -106,7 +116,7 @@ sudo ./syno_docker_update.sh logger
 
 This:
 
-- Sets Docker's default log driver to `local`
+- Sets Docker’s default log driver to `local`
 - Restarts Docker
 
 Then check which containers are _still_ using `db`:
@@ -154,7 +164,7 @@ If you did the logger step correctly, containers should come back automatically.
 
 ## 🔁 Future updates (easy mode)
 
-Once you've crossed the logging hurdle, updates are simple:
+Once you’ve crossed the logging hurdle, updates are simple:
 
 ```bash
 cd synology-docker
@@ -192,48 +202,6 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 | `--backup NAME`     | Backup file name          |
 | `--force`           | Skip compatibility checks |
 | `--stage`           | Download only, no install |
-
----
-
-## 🔧 Troubleshooting
-
-### Container Manager fails to start after update (AppArmor error)
-
-On some Synology systems, Container Manager may fail to start after a Docker update with an error similar to:
-
-```
-AppArmor enabled on system but the docker-default profile could not be loaded
-```
-
-This happens because Docker detects the AppArmor kernel module is loaded but the required `apparmor_parser` userspace tool is missing from DSM - a known issue on certain Synology kernels.
-
-**Fix:** Run the included helper script to disable AppArmor profile loading in Docker's daemon config:
-
-```bash
-sudo ./fix_apparmor.sh
-```
-
-The script will:
-
-- Warn you of what it's doing and ask for confirmation
-- Back up your current `dockerd.json` to `./dockerd.json.bkup`
-- Add `"apparmor": false` to `dockerd.json`
-- Tell you to restart Container Manager when done
-
-To restart Container Manager after running the script:
-
-```bash
-sudo synopkg restart ContainerManager
-```
-
-**To undo the change:**
-
-```bash
-sudo ./fix_apparmor.sh --restore
-sudo synopkg restart ContainerManager
-```
-
-> **Note:** This fix is only needed if you see the AppArmor error above. Do not run it as a standard part of the update process.
 
 ---
 

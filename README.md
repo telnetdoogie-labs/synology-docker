@@ -29,12 +29,12 @@ Synology ships Docker or, as they call it in later versions "Container Manager".
 
 This repo gives you a **repeatable, reversible, and reasonably safe** way to:
 
-* Update Docker Engine on Synology to the latest
-* Update Docker Compose
-* Escape Synology’s legacy `db` log driver
-* Roll back if something goes sideways
+- Update Docker Engine on Synology to the latest
+- Update Docker Compose
+- Escape Synology's legacy `db` log driver
+- Roll back if something goes sideways
 
-If you’re comfortable with SSH and `sudo`, this is for you.
+If you're comfortable with SSH and `sudo`, this is for you.
 
 ---
 
@@ -62,10 +62,10 @@ or restart the Nvidia driver **after** running this script.
 
 Portainer currently **persists the original logging driver** used when a container was created. This means:
 
-* Containers created with the `db` logger will *stay broken* after upgrade
-* You **must recreate** them to switch to `local`
+- Containers created with the `db` logger will _stay broken_ after upgrade
+- You **must recreate** them to switch to `local`
 
-👉 **Fix your loggers before upgrading Docker** or you’ll spend hours recreating containers anyway.
+👉 **Fix your loggers before upgrading Docker** or you'll spend hours recreating containers anyway.
 
 ---
 
@@ -98,7 +98,7 @@ cd synology-docker
 
 > **TL;DR:** Fix logging → recreate containers → upgrade Docker
 
-### Step 1: Switch Docker’s default log driver
+### Step 1: Switch Docker's default log driver
 
 ```bash
 sudo ./syno_docker_update.sh logger
@@ -106,10 +106,10 @@ sudo ./syno_docker_update.sh logger
 
 This:
 
-* Sets Docker’s default log driver to `local`
-* Restarts Docker
+- Sets Docker's default log driver to `local`
+- Restarts Docker
 
-Then check which containers are *still* using `db`:
+Then check which containers are _still_ using `db`:
 
 ```bash
 ./syno_docker_list_containers.sh
@@ -138,7 +138,7 @@ docker-compose up -d --force-recreate
 
 Re‑run `syno_docker_list_containers.sh` until **everything** says `local`.
 
-> Containers created via `docker run` will show a *best‑guess* recreate command. Verify it before running.
+> Containers created via `docker run` will show a _best‑guess_ recreate command. Verify it before running.
 
 ---
 
@@ -154,7 +154,7 @@ If you did the logger step correctly, containers should come back automatically.
 
 ## 🔁 Future updates (easy mode)
 
-Once you’ve crossed the logging hurdle, updates are simple:
+Once you've crossed the logging hurdle, updates are simple:
 
 ```bash
 cd synology-docker
@@ -195,22 +195,64 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 
 ---
 
+## 🔧 Troubleshooting
+
+### Container Manager fails to start after update (AppArmor error)
+
+On some Synology systems, Container Manager may fail to start after a Docker update with an error similar to:
+
+```
+AppArmor enabled on system but the docker-default profile could not be loaded
+```
+
+This happens because Docker detects the AppArmor kernel module is loaded but the required `apparmor_parser` userspace tool is missing from DSM - a known issue on certain Synology kernels.
+
+**Fix:** Run the included helper script to disable AppArmor profile loading in Docker's daemon config:
+
+```bash
+sudo ./fix_apparmor.sh
+```
+
+The script will:
+
+- Warn you of what it's doing and ask for confirmation
+- Back up your current `dockerd.json` to `./dockerd.json.bkup`
+- Add `"apparmor": false` to `dockerd.json`
+- Tell you to restart Container Manager when done
+
+To restart Container Manager after running the script:
+
+```bash
+sudo synopkg restart ContainerManager
+```
+
+**To undo the change:**
+
+```bash
+sudo ./fix_apparmor.sh --restore
+sudo synopkg restart ContainerManager
+```
+
+> **Note:** This fix is only needed if you see the AppArmor error above. Do not run it as a standard part of the update process.
+
+---
+
 ## Contributing
 
 PRs welcome.
 
 1. Fork
 2. Test on real hardware
-3. Explain *why* the change exists
+3. Explain _why_ the change exists
 
 ---
 
 ## Credits
 
-* Original work by [@markdumay](https://github.com/markdumay)
-* Extensive testing by [@mrmuiz](https://github.com/mrmuiz)
-* Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
-* Kernel 5.x runc issue / resolution and additional repo contributions by [@bslatyer](https://github.com/bslatyer)
+- Original work by [@markdumay](https://github.com/markdumay)
+- Extensive testing by [@mrmuiz](https://github.com/mrmuiz)
+- Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
+- Kernel 5.x runc issue / resolution and additional repo contributions by [@bslatyer](https://github.com/bslatyer)
 
 ---
 

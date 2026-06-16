@@ -42,7 +42,7 @@ fi
 echo "Original dockerd.json file:"
 echo "----------------------------"
 echo
-jq < ${DOCKERD_FILE}
+jq . "${DOCKERD_FILE}"
 echo
 
 # Use jq to safely update the log-driver and merge new log-opts
@@ -71,7 +71,7 @@ jq '
 echo "Updated dockerd.json file:"
 echo "----------------------------"
 echo
-jq < ${DOCKERD_FILE}
+jq . "${DOCKERD_FILE}"
 echo
 
 exit 0

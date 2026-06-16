@@ -16,7 +16,7 @@
 #   Writes error message to stderr, non-zero exit code.
 #======================================================================================================================
 terminate() {
-  printf "${RED}${BOLD}%s${NC}\n" "ERROR: $1"
+  printf "${RED}${BOLD}%s${NC}\n" "ERROR: $1" >&2
   exit 1
 }
 
@@ -72,6 +72,8 @@ readonly SYNO_DOCKER_JSON_PATH="${SYNO_DOCKER_DIR}/etc"
 readonly SYNO_DOCKER_JSON="${SYNO_DOCKER_JSON_PATH}/dockerd.json"
 readonly SYNO_DOCKER_SCRIPT_FORWARDING="            # Added by docker update\n          iptables -P FORWARD ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD"
 readonly SYNO_SERVICE_STOP_TIMEOUT='10m'
+readonly SYNOPKG_BIN='/usr/syno/bin/synopkg'
+readonly SYNOSERVICECTL_BIN='/usr/syno/sbin/synoservicectl'
 RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | awk 'NF' | wc -l)
 if [ $? -ne 0 ]; then
   RUNNING_CONTAINERS=0
@@ -633,6 +635,57 @@ confirm_operation() {
 }
 
 #======================================================================================================================
+# Resolves the absolute path to a Synology system control binary ('synopkg' or 'synoservicectl').
+#======================================================================================================================
+# Arguments:
+#   $1 - Binary name (e.g. 'synopkg' or 'synoservicectl').
+#   $2 - Well-known absolute path for this binary on DSM (e.g. '/usr/syno/bin/synopkg').
+# Outputs:
+#   Writes the resolved absolute path to stdout. Terminates with a non-zero exit code if the
+#   binary cannot be found at the well-known path or on PATH - this commonly happens when the
+#   script is run via 'sudo', whose default PATH does not include '/usr/syno/bin' or
+#   '/usr/syno/sbin'.
+#======================================================================================================================
+resolve_syno_bin() {
+  local bin_name="$1"
+  local well_known_path="$2"
+
+  if [ -x "${well_known_path}" ]; then
+    echo "${well_known_path}"
+  elif command -v "${bin_name}" >/dev/null 2>&1; then
+    command -v "${bin_name}"
+  else
+    terminate "Could not find '${bin_name}' (checked '${well_known_path}' and PATH). Cannot control the ${SYNO_DOCKER_SERV_NAME} package. If running via 'sudo', ensure PATH includes '/usr/syno/bin' and '/usr/syno/sbin', e.g.: sudo env PATH=/usr/syno/bin:/usr/syno/sbin:\$PATH $0 ..."
+  fi
+}
+
+#======================================================================================================================
+# Fails fast if the Synology package-control tool needed to stop/start the Docker package ('synopkg' on DSM 7,
+# 'synoservicectl' on DSM 6) is not resolvable - rather than only discovering this midway through a run, when
+# execute_stop_syno/execute_start_syno are reached.
+#======================================================================================================================
+# Globals:
+#   - dsm_major_version
+#   - stage
+# Outputs:
+#   Terminates with a non-zero exit code if the required tool cannot be resolved, unless 'stage' is true.
+#======================================================================================================================
+validate_syno_tools() {
+  if [ "${stage}" = 'true' ] ; then
+    return
+  fi
+
+  case "${dsm_major_version}" in
+    "6")
+      resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}" >/dev/null
+      ;;
+    "7")
+      resolve_syno_bin "synopkg" "${SYNOPKG_BIN}" >/dev/null
+      ;;
+  esac
+}
+
+#======================================================================================================================
 # Workflow Functions
 #======================================================================================================================
 
@@ -663,20 +716,22 @@ execute_stop_syno() {
   if [ "${stage}" = 'false' ] ; then
     case "${dsm_major_version}" in
       "6")
-        syno_status=$(synoservicectl --status "${SYNO_DOCKER_SERV_NAME}" | grep running -o)
+        synoservicectl_bin=$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")
+        syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep running -o)
         if [ "${syno_status}" = 'running' ] ; then
-          timeout --foreground "${SYNO_SERVICE_STOP_TIMEOUT}" synoservicectl --stop "${SYNO_DOCKER_SERV_NAME}"
-          syno_status=$(synoservicectl --status "${SYNO_DOCKER_SERV_NAME}" | grep stop -o)
+          timeout --foreground "${SYNO_SERVICE_STOP_TIMEOUT}" "${synoservicectl_bin}" --stop "${SYNO_DOCKER_SERV_NAME}"
+          syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep stop -o)
           if [ "${syno_status}" != 'stop' ] ; then
             terminate "Could not stop Docker daemon"
           fi
         fi
         ;;
       "7")
-        syno_status=$(synopkg status "${SYNO_DOCKER_SERV_NAME}" | grep started -o)
+        synopkg_bin=$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")
+        syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep started -o)
         if [ "${syno_status}" = 'started' ] ; then
-          timeout --foreground "${SYNO_SERVICE_STOP_TIMEOUT}" synopkg stop "${SYNO_DOCKER_SERV_NAME}"
-          syno_status=$(synopkg status "${SYNO_DOCKER_SERV_NAME}" | grep stopped -o)
+          timeout --foreground "${SYNO_SERVICE_STOP_TIMEOUT}" "${synopkg_bin}" stop "${SYNO_DOCKER_SERV_NAME}"
+          syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep stopped -o)
           if [ "${syno_status}" != 'stopped' ] ; then
             terminate "Could not stop Docker daemon"
           fi
@@ -1003,9 +1058,10 @@ execute_start_syno() {
   if [ "${stage}" = 'false' ] ; then
     case "${dsm_major_version}" in
       "6")
-        timeout --foreground "${SYNO_SERVICE_START_TIMEOUT}" synoservicectl --start "${SYNO_DOCKER_SERV_NAME}"
+        synoservicectl_bin=$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")
+        timeout --foreground "${SYNO_SERVICE_START_TIMEOUT}" "${synoservicectl_bin}" --start "${SYNO_DOCKER_SERV_NAME}"
 
-        syno_status=$(synoservicectl --status "${SYNO_DOCKER_SERV_NAME}" | grep running -o)
+        syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep running -o)
         if [ "${syno_status}" != 'running' ] ; then
           if [ "${force}" != 'true' ] ; then
             terminate "Could not bring Docker Engine back online"
@@ -1015,9 +1071,10 @@ execute_start_syno() {
         fi
         ;;
       "7")
-        timeout --foreground "${SYNO_SERVICE_START_TIMEOUT}" synopkg start "${SYNO_DOCKER_SERV_NAME}"
+        synopkg_bin=$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")
+        timeout --foreground "${SYNO_SERVICE_START_TIMEOUT}" "${synopkg_bin}" start "${SYNO_DOCKER_SERV_NAME}"
 
-        syno_status=$(synopkg status "${SYNO_DOCKER_SERV_NAME}" | grep started -o)
+        syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep started -o)
         if [ "${syno_status}" != 'started' ] ; then
           if [ "${force}" != 'true' ] ; then
             terminate "Could not bring Docker Engine back online"
@@ -1172,6 +1229,7 @@ main() {
     install )
       total_steps=8
       detect_current_versions
+      validate_syno_tools
       execute_prepare
       define_target_download
       confirm_operation
@@ -1187,6 +1245,7 @@ main() {
     restore )
       total_steps=6
       detect_current_versions
+      validate_syno_tools
       execute_prepare
       define_restore
       confirm_operation
@@ -1200,6 +1259,7 @@ main() {
     logger )
       total_steps=4
       detect_current_versions
+      validate_syno_tools
       execute_prepare
       execute_stop_syno
       execute_backup
@@ -1209,6 +1269,7 @@ main() {
     update )
       total_steps=12
       detect_current_versions
+      validate_syno_tools
       execute_prepare
       define_target_version
       define_update

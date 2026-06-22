@@ -1,27 +1,11 @@
 # synology-docker
 
-> **An unofficial but battle‑tested way to update Docker Engine & Docker Compose on Synology NAS**
+> [!NOTE]
+> An unofficial but battle‑tested way to update Docker Engine & Docker Compose on Synology NAS.
 >
 > Originally forked from [markdumay/synology-docker](https://github.com/markdumay/synology-docker)
 
----
-
-<p align="center">
-  <a href="https://github.com/telnetdoogie/synology-docker/commits/master">
-    <img src="https://img.shields.io/github/last-commit/telnetdoogie/synology-docker.svg" />
-  </a>
-  <a href="https://github.com/telnetdoogie/synology-docker/issues">
-    <img src="https://img.shields.io/github/issues/telnetdoogie/synology-docker.svg" />
-  </a>
-  <a href="https://github.com/telnetdoogie/synology-docker/pulls">
-    <img src="https://img.shields.io/github/issues-pr-raw/telnetdoogie/synology-docker.svg" />
-  </a>
-  <a href="https://github.com/telnetdoogie/synology-docker/blob/master/LICENSE">
-    <img src="https://img.shields.io/github/license/telnetdoogie/synology-docker.svg" />
-  </a>
-</p>
-
----
+![Last Commit][synology-docker-last-commit] ![Issues][synology-docker-issues] ![Pull Requests][synology-docker-pulls] ![License][synology-docker-license]
 
 ## Why this exists
 
@@ -36,23 +20,21 @@ This repo gives you a **repeatable, reversible, and reasonably safe** way to:
 
 If you’re comfortable with SSH and `sudo`, this is for you.
 
----
-
-## ⚠️ Important warnings (read these first)
-
+> [!IMPORTANT]\
 > **This is not supported by Synology.**
 > You can absolutely break things if you ignore instructions. Always have backups.
 > Once upgraded, The ContainerManager UI will no longer work reliably for managing containers or observing logs.
 
-### Docker 29.x known issues
-
-> ⚠️ **Some users are experiencing Container Manager failures after updating to Docker 29.x.** This is a known issue between Synology's Container Manager and the upstream Docker 29.x release. If you run into this, roll back using:
+> [!WARNING]\
+> **Some users are experiencing Container Manager failures after updating to Docker 29.x.**
 >
-> ```bash
-> sudo ./syno_docker_update.sh restore --backup [backup_name]
-> ```
->
-> Until Synology or upstream Docker resolves the compatibility issue, it is recommended to pin to the latest stable 28.x release using `--docker 28.x.x`.
+> > This is a known issue between Synology's Container Manager and the upstream Docker 29.x release. If you run into this, roll back using:
+> >
+> > ```bash
+> > sudo ./syno_docker_update.sh restore --backup [backup_name]
+> > ```
+> >
+> > Until Synology or upstream Docker resolves the compatibility issue, it is recommended to pin to the latest stable 28.x release using `--docker 28.x.x`.
 
 ### DSM Version
 
@@ -75,9 +57,8 @@ Portainer currently **persists the original logging driver** used when a contain
 - Containers created with the `db` logger will _stay broken_ after upgrade
 - You **must recreate** them to switch to `local`
 
-👉 **Fix your loggers before upgrading Docker** or you’ll spend hours recreating containers anyway.
-
----
+> [!TIP]
+> 👉 **Fix your loggers before upgrading Docker** or you’ll spend hours recreating containers anyway.
 
 ## What this script actually does
 
@@ -91,21 +72,18 @@ At a high level:
 
 Everything is scripted. Nothing is magic. Rollbacks are built‑in.
 
----
-
 ## Installation
 
 SSH into your NAS and clone the repo:
 
 ```bash
-git clone https://github.com/telnetdoogie/synology-docker.git
+git clone https://github.com/telnetdoogie/synology-docker
 cd synology-docker
 ```
 
----
-
 ## 🚀 First‑time upgrade (do this once, carefully)
 
+> [!NOTE]
 > **TL;DR:** Fix logging → recreate containers → upgrade Docker
 
 ### Step 1: Switch Docker’s default log driver
@@ -135,8 +113,6 @@ Container            Compose_Location                               Logger
 /dozzle              /volume1/docker/dozzle/docker-compose.yml      local
 ```
 
----
-
 ### Step 2: Recreate containers still using `db`
 
 For **each** compose‑managed container using `db`:
@@ -150,8 +126,6 @@ Re‑run `syno_docker_list_containers.sh` until **everything** says `local`.
 
 > Containers created via `docker run` will show a _best‑guess_ recreate command. Verify it before running.
 
----
-
 ### Step 3: Upgrade Docker & Compose
 
 ```bash
@@ -159,8 +133,6 @@ sudo ./syno_docker_update.sh update
 ```
 
 If you did the logger step correctly, containers should come back automatically.
-
----
 
 ## 🔁 Future updates (easy mode)
 
@@ -171,8 +143,6 @@ cd synology-docker
 git pull
 sudo ./syno_docker_update.sh update
 ```
-
----
 
 ## Usage
 
@@ -191,8 +161,6 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 | `logger`        | Update logging driver only         |
 | `update`        | Full backup + update               |
 
----
-
 ## Options
 
 | Option              | Description               |
@@ -203,8 +171,6 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 | `--force`           | Skip compatibility checks |
 | `--stage`           | Download only, no install |
 
----
-
 ## Contributing
 
 PRs welcome.
@@ -213,8 +179,6 @@ PRs welcome.
 2. Test on real hardware
 3. Explain _why_ the change exists
 
----
-
 ## Credits
 
 - Original work by [@markdumay](https://github.com/markdumay)
@@ -222,14 +186,11 @@ PRs welcome.
 - Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
 - Kernel 5.x runc issue / resolution and additional repo contributions by [@bslatyer](https://github.com/bslatyer)
 
----
-
-## License
-
-MIT
-
----
-
 ## Origin
 
 Forked from [https://github.com/markdumay/synology-docker](https://github.com/markdumay/synology-docker)
+
+[synology-docker-last-commit]: https://img.shields.io/github/last-commit/telnetdoogie/synology-docker.svg
+[synology-docker-issues]: https://img.shields.io/github/issues/telnetdoogie/synology-docker.svg
+[synology-docker-pulls]: https://img.shields.io/github/issues-pr-raw/telnetdoogie/synology-docker.svg
+[synology-docker-license]: https://img.shields.io/github/license/telnetdoogie/synology-docker.svg

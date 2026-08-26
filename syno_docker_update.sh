@@ -74,8 +74,7 @@ readonly SYNO_DOCKER_SCRIPT_FORWARDING="            # Added by docker update\n  
 readonly SYNO_SERVICE_STOP_TIMEOUT='10m'
 readonly SYNOPKG_BIN='/usr/syno/bin/synopkg'
 readonly SYNOSERVICECTL_BIN='/usr/syno/sbin/synoservicectl'
-RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | awk 'NF' | wc -l)
-if [ $? -ne 0 ]; then
+if ! RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | awk 'NF' | wc -l); then
   RUNNING_CONTAINERS=0
 fi
 if [ "$RUNNING_CONTAINERS" -gt 5 ]; then

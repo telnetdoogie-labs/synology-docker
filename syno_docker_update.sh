@@ -112,6 +112,7 @@ step=0
 total_steps=0
 install_iptables_modules='false'
 skip_iptables_modules='false'
+install_apparmor='false'
 
 
 #======================================================================================================================
@@ -147,6 +148,7 @@ usage() {
   echo "  restore                Restore Docker and Docker Compose from backup"
   echo "  update                 Update Docker and Docker Compose to target version (creates backup first)"
   echo "  logger                 Update ONLY the logging driver to the local logger (a proactive preparation step)"
+  echo "  only_script            Update ONLY the start-stop-status IP forwarding block (no binaries, no restart)"
   echo "  validate               Validates versions available for update"
   echo
 }
@@ -533,6 +535,10 @@ define_update() {
     major="${target_docker_version%%.*}"
     if [[ "$major" -ge 28 && "${skip_iptables_modules}" = 'false' ]]; then
       install_iptables_modules='true'
+      total_steps=$((total_steps+1))
+    fi
+    if [[ "$major" -ge 29 ]]; then
+      install_apparmor='true'
       total_steps=$((total_steps+1))
     fi
     if [ "${docker_version}" = "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] ; then
@@ -972,6 +978,13 @@ execute_update_log() {
 #======================================================================================================================
 # Updates Synology's start-stop-status script for Docker to ensure IP forwarding is enabled, unless 'stage' is set to
 # true.
+#
+# The forwarding block MUST be inserted after 'start_docker_daemon' has completed. The DOCKER-FORWARD chain is created
+# by dockerd itself, so inserting the jump rule any earlier means 'iptables -C FORWARD -j DOCKER-FORWARD' fails (the
+# chain does not exist) and the fallback 'iptables -I FORWARD 1 -j DOCKER-FORWARD' fails too. dockerd then sets the
+# FORWARD policy to DROP, leaving a DROP policy with no jump - published container ports become unreachable from other
+# hosts after every clean boot, while working again after any subsequent Container Manager restart (because dockerd
+# already exists by then). That masking is what makes the bug look intermittent when it is actually deterministic.
 #======================================================================================================================
 # Globals:
 #   - stage
@@ -984,20 +997,25 @@ execute_update_script() {
     # File to edit
     file="${SYNO_DOCKER_SCRIPT}"
 
-    # Search and check conditions
-    if ! grep -q 'iptables -P FORWARD ACCEPT' "${file}"; then
-      match="^[[:space:]]*# start docker[[:space:]]*$"
-      # Use sed to append the lines before the match
+    # Verify the insertion anchor exists before touching the file, so a missing anchor leaves
+    # the file unmodified.
+    match="^[[:space:]]*[$]DockerUpdaterBin postdaemonup[[:space:]]*$"
+    if grep -qE "${match}" "${file}"; then
+      # Remove any previously-inserted forwarding block, wherever it landed. Older versions of this script (and
+      # fix_ipforward.sh / switch_forward.sh) inserted it before 'start_docker_daemon'. Only the iptables FORWARD lines
+      # (and the comment directly above them) are removed; the identically-commented insmod block added by
+      # install_iptables_modules.sh is left untouched.
+      sed -i '/^[[:space:]]*iptables -C FORWARD -j DOCKER-FORWARD/d' "${file}"
+      sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "${file}"
+      sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -P FORWARD ACCEPT/d}' "${file}"
+      sed -i '/^[[:space:]]*iptables -P FORWARD ACCEPT[[:space:]]*$/d' "${file}"
+
+      # Insert only after the daemon is confirmed up.
       sed -i "/${match}/i\\${SYNO_DOCKER_SCRIPT_FORWARDING}" "${file}"
-      echo "Added missing IP forwarding configuration to ${file}."
+      echo "Added IP forwarding configuration to ${file} (post daemon start)."
     else
-      echo "IP forwarding is already enabled in ${file}."
-    fi
-    # Ensure DOCKER-FORWARD jump rule is present (Docker v25+ compatibility)
-    if ! grep -q 'DOCKER-FORWARD' "${file}"; then
-      match="^[[:space:]]*iptables -P FORWARD ACCEPT"
-      sed -i "/${match}/a\\          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD" "${file}"
-      echo "Added DOCKER-FORWARD jump rule to ${file}."
+      echo "WARNING: anchor '\$DockerUpdaterBin postdaemonup' not found in ${file}."
+      echo "         File left unmodified -- check the file manually."
     fi
   else
     echo "Skipping configuration in STAGE mode"
@@ -1103,6 +1121,21 @@ install_modules() {
   if [[ "${install_iptables_modules}" == 'true' ]]; then
   echo "   Based on this version of docker, we'll need to check for / install iptables modules..."
   "${SCRIPT_DIR}/install_iptables_modules.sh" || terminate "Could not install iptables modules. Stopping."
+  fi
+}
+
+#======================================================================================================================
+# Installs a docker-default AppArmor profile for v29+ (see install_apparmor_profile.sh)
+#======================================================================================================================
+# Globals:
+#   - install_apparmor
+# Outputs:
+#   profile installed and loaded, start script modified (if necessary)
+#======================================================================================================================
+install_apparmor_profile() {
+  if [[ "${install_apparmor}" == 'true' ]]; then
+    print_status "Installing docker-default AppArmor profile."
+    bash "${SCRIPT_DIR}/install_apparmor_profile.sh" || terminate "Could not install AppArmor profile. Stopping."
   fi
 }
 
@@ -1282,6 +1315,7 @@ main() {
       execute_install_bin
       execute_update_log
       execute_update_script
+      install_apparmor_profile
       execute_start_syno
       execute_clean
       ;;

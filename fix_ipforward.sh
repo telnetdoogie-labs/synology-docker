@@ -8,33 +8,34 @@ if [ "${id}" -ne 0 ]; then
 fi
 
 # Define the lines to insert
-INSERT="  # Added by docker update\n  iptables -P FORWARD ACCEPT\n  iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD"
+INSERT="            # Added by docker update\n          iptables -P FORWARD ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD"
 
 # File to edit
 file="/var/packages/ContainerManager/scripts/start-stop-status"
 
-# Search and check conditions
-if ! grep -q 'iptables -P FORWARD ACCEPT' "${file}"; then
-  match="^[[:space:]]*iptablestool --insmod"
-  # Use sed to append the lines after the match
-  sed -i "/${match}/a\\${INSERT}" "${file}"
-  echo "Added missing IP forwarding configuration to ${file}"
-  echo
-  echo "To avoid a restart of docker, adding the rule now. This should automatically apply"
-  echo "  with the next docker restart"
-  iptables -P FORWARD ACCEPT
-  iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD
-else
-  echo "IP forwarding is already enabled in ${file}."
+# Verify the insertion anchor exists before touching the file, so a missing anchor leaves
+# the file unmodified.
+match="^[[:space:]]*[$]DockerUpdaterBin postdaemonup[[:space:]]*$"
+if ! grep -qE "${match}" "${file}"; then
+  echo "WARNING: anchor '\$DockerUpdaterBin postdaemonup' not found in ${file}."
+  echo "         File left unmodified -- check the file manually."
+  exit 1
 fi
 
-# Ensure DOCKER-FORWARD jump rule is present (Docker v25+ compatibility)
-if ! grep -q 'DOCKER-FORWARD' "${file}"; then
-  match="^[[:space:]]*iptables -P FORWARD ACCEPT"
-  sed -i "/${match}/a\\  iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD" "${file}"
-  echo "Added DOCKER-FORWARD jump rule to ${file}"
-  echo
-  echo "To avoid a restart of docker, adding the rule now. This should automatically apply"
-  echo "  with the next docker restart"
-  iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD
-fi
+# Remove any previously-inserted forwarding block, wherever it landed. Earlier versions inserted it
+# before 'start_docker_daemon', where the DOCKER-FORWARD chain does not yet exist. The insmod block
+# sharing the same comment is left untouched.
+sed -i '/^[[:space:]]*iptables -C FORWARD -j DOCKER-FORWARD/d' "${file}"
+sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "${file}"
+sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -P FORWARD ACCEPT/d}' "${file}"
+sed -i '/^[[:space:]]*iptables -P FORWARD ACCEPT[[:space:]]*$/d' "${file}"
+
+# Insert only after the daemon is confirmed up. dockerd creates the DOCKER-FORWARD chain, so the
+# jump rule cannot be added any earlier.
+sed -i "/${match}/i\\${INSERT}" "${file}"
+echo "Added IP forwarding configuration to ${file} (post daemon start)"
+echo
+echo "To avoid a restart of docker, adding the rules now. This should automatically apply"
+echo " with the next docker restart"
+iptables -P FORWARD ACCEPT
+iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD

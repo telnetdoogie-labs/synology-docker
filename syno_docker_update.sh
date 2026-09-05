@@ -1102,7 +1102,7 @@ install_modules() {
   print_status "Checking for / Installing iptables modules."
   if [[ "${install_iptables_modules}" == 'true' ]]; then
   echo "   Based on this version of docker, we'll need to check for / install iptables modules..."
-  ./install_iptables_modules.sh || terminate "Could not install iptables modules. Stopping."
+  "${SCRIPT_DIR}/install_iptables_modules.sh" || terminate "Could not install iptables modules. Stopping."
   fi
 }
 

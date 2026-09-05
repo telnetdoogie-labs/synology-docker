@@ -1,5 +1,7 @@
 #!/bin/bash
 
+readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+
 # Store container information in an array
 containers_info=()
 readonly NOT_COMPOSE="!---not_managed_by_compose---!"
@@ -63,7 +65,7 @@ if [ ${#docker_managed[@]} -gt 0 ]; then
   echo "If these containers already show as 'local' logger, there is no need to recreate them manually"
   echo
   for container in "${docker_managed[@]}"; do
-  docker_command=$(./container_recreate.sh $container)
+  docker_command=$("${SCRIPT_DIR}/container_recreate.sh" "$container")
   echo "----------------------------------------------------"
   echo "Container: ${container}"
   echo "----------------------------------------------------"

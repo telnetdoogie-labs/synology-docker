@@ -42,7 +42,7 @@ host_env=$(printenv | awk -F= '{print $1}' | sort)
 
 debug "env variables..."
 # Extract container environment variables and filter out those present on the host - default to empty if no env vars
-env_vars=$(echo "$container_info" | jq -r '.[0].Config.Env[] // [] ' | awk -F= '{print $1}' | sort)
+env_vars=$(echo "$container_info" | jq -r '(.[0].Config.Env // [])[]' | awk -F= '{print $1}' | sort)
 filtered_env_vars=$(comm -23 <(echo "$env_vars") <(echo "$host_env"))
 
 # Add base docker command to the array
@@ -74,7 +74,7 @@ fi
 
 debug "volumes..."
 # Extract volumes and add each volume to the array individually
-volumes=$(echo "$container_info" | jq -r '.[0].Mounts[] // [] | "-v " + .Source + ":" + .Destination')
+volumes=$(echo "$container_info" | jq -r '(.[0].Mounts // [])[] | "-v " + .Source + ":" + .Destination')
 if [ -n "$volumes" ]; then
   # Add each volume as a separate entry
   while IFS= read -r volume; do

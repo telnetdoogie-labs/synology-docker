@@ -162,19 +162,25 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 
 ## Contributing
 
-PRs welcome.
+PRs are **VERY** welcome here. Many of the recent updates have been contributed by users just like you.
 
-1. Fork
-2. Test on real hardware
-3. Explain _why_ the change exists
+1. Open an [Issue](https://github.com/telnetdoogie/synology-docker/issues)
+2. [Fork the repo](https://github.com/telnetdoogie/synology-docker/fork)
+3. Make and test your change on real hardware
+4. Submit a PR back to this repo, and link with a comment to the Issue you created.
+5. Provide details on what you did, what you've tested it on, and the results of those tests.
 
 ## Credits
 
 - Original work by [@markdumay](https://github.com/markdumay)
 - Extensive testing by [@mrmuiz](https://github.com/mrmuiz)
+- Kernel 5.x runc issue / resolution and additional repo contributions and maintenance by [@bslatyer](https://github.com/bslatyer)
 - Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
-- Kernel 5.x runc issue / resolution and additional repo contributions by [@bslatyer](https://github.com/bslatyer)
 - Awesome IP Forward rules fix and AppArmor update for v29+ by [@Salvora](https://github.com/Salvora)
+
+## Special Thanks
+- [@bslatyer](https://github.com/bslatyer) for repo maintenance and proactive stewardship and co-ownership
+- **Marius** @ [MariusHosting](https://mariushosting.com) for linking to the repo from his [August 2026 post](https://mariushosting.com/synology-new-docker-version-24-0-2-1706/)
 
 ## Origin
 

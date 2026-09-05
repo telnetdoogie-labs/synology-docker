@@ -25,17 +25,6 @@ If you’re comfortable with SSH and `sudo`, this is for you.
 > You can absolutely break things if you ignore instructions. Always have backups.
 > Once upgraded, The ContainerManager UI will no longer work reliably for managing containers or observing logs.
 
-> [!WARNING]\
-> **Some users are experiencing Container Manager failures after updating to Docker 29.x.**
->
-> > This is a known issue between Synology's Container Manager and the upstream Docker 29.x release. If you run into this, roll back using:
-> >
-> > ```bash
-> > sudo ./syno_docker_update.sh restore --backup [backup_name]
-> > ```
-> >
-> > Until Synology or upstream Docker resolves the compatibility issue, it is recommended to pin to the latest stable 28.x release using `--docker 28.x.x`.
-
 ### DSM Version
 
 Before using this, update to the most recent version of DSM that you can. That'll avoid many issues and will make sure the minor version of your kernel is up to date. I can't keep track of all of the older minor kernel versions for each platform, that would become unmanageable. Sometimes you'll need to download the latest DSM patch manually as it may not show as an automatic update for your model. Look for your latest DSM [here](https://www.synology.com/en-br/support/download)
@@ -185,6 +174,7 @@ PRs welcome.
 - Extensive testing by [@mrmuiz](https://github.com/mrmuiz)
 - Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
 - Kernel 5.x runc issue / resolution and additional repo contributions by [@bslatyer](https://github.com/bslatyer)
+- Awesome IP Forward rules fix and AppArmor update for v29+ by [@Salvora](https://github.com/Salvora)
 
 ## Origin
 

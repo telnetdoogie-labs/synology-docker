@@ -1054,6 +1054,9 @@ execute_restore_script() {
   print_status "Restoring start-stop-status script"
   if [ "${stage}" = 'false' ] ; then
     cp "${temp_dir}"/start-stop-status "${SYNO_DOCKER_SCRIPT}"
+    if [ -f "${SCRIPT_DIR}/install_apparmor_profile.sh" ]; then
+      bash "${SCRIPT_DIR}/install_apparmor_profile.sh" --restore
+    fi
   else
     echo "Skipping restoring in STAGE mode or TARGET mode"
   fi
@@ -1125,16 +1128,16 @@ install_modules() {
 }
 
 #======================================================================================================================
-# Installs a docker-default AppArmor profile for v29+ (see install_apparmor_profile.sh)
+# Installs apparmor_parser wrapper and docker-default AppArmor profile for v29+ (see install_apparmor_profile.sh)
 #======================================================================================================================
 # Globals:
 #   - install_apparmor
 # Outputs:
-#   profile installed and loaded, start script modified (if necessary)
+#   wrapper installed, profile installed and loaded, start script modified (if necessary)
 #======================================================================================================================
 install_apparmor_profile() {
   if [[ "${install_apparmor}" == 'true' ]]; then
-    print_status "Installing docker-default AppArmor profile."
+    print_status "Installing AppArmor parser wrapper and docker-default profile."
     bash "${SCRIPT_DIR}/install_apparmor_profile.sh" || terminate "Could not install AppArmor profile. Stopping."
   fi
 }

@@ -179,6 +179,7 @@ PRs are **VERY** welcome here. Many of the recent updates have been contributed 
 - Awesome IP Forward rules fix and AppArmor update for v29+ by [@Salvora](https://github.com/Salvora)
 
 ## Special Thanks
+
 - [@bslatyer](https://github.com/bslatyer) for repo maintenance and proactive stewardship and co-ownership
 - **Marius** @ [MariusHosting](https://mariushosting.com) for linking to the repo from his [August 2026 post](https://mariushosting.com/synology-new-docker-version-24-0-2-1706/)
 

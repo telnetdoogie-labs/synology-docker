@@ -177,6 +177,7 @@ PRs are **VERY** welcome here. Many of the recent updates have been contributed 
 - Kernel 5.x runc issue / resolution and additional repo contributions and maintenance by [@bslatyer](https://github.com/bslatyer)
 - Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
 - Awesome IP Forward rules fix and AppArmor update for v29+ by [@Salvora](https://github.com/Salvora)
+- AppArmor update / fix by [@Auddis](https://github.com/Auddis)
 
 ## Special Thanks
 - [@bslatyer](https://github.com/bslatyer) for repo maintenance and proactive stewardship and co-ownership

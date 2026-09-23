@@ -3,8 +3,8 @@
 <!-- Do not tick a checkbox if you haven't performed its action. Honesty is indispensable for a smooth review process. -->
 <!-- Use [x] to mark item done before creation, or just click the checkboxes with your device pointer after creation -->
 
-- [ ] Have you followed the guidelines in our [Contributing](https://github.com/telnetdoogie/synology-docker#contributing) document?
-- [ ] Have you checked to ensure there aren't other open [Pull Requests](https://github.com/telnetdoogie/synology-docker/pulls) for the same change?
+- [ ] Have you followed the guidelines in our [Contributing](https://github.com/telnetdoogie-labs/synology-docker#contributing) document?
+- [ ] Have you checked to ensure there aren't other open [Pull Requests](https://github.com/telnetdoogie-labs/synology-docker/pulls) for the same change?
 - [ ] Have you added an explanation of what your changes do and why you'd like us to include them?
 - [ ] Have you written new tests (excluding integration tests) for your changes (if applicable)?
 - [ ] Have you successfully run your changes locally?

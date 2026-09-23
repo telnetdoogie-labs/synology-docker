@@ -66,7 +66,7 @@ Everything is scripted. Nothing is magic. Rollbacks are built‑in.
 SSH into your NAS and clone the repo:
 
 ```bash
-git clone https://github.com/telnetdoogie/synology-docker
+git clone https://github.com/telnetdoogie-labs/synology-docker
 cd synology-docker
 ```
 
@@ -164,8 +164,8 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 
 PRs are **VERY** welcome here. Many of the recent updates have been contributed by users just like you.
 
-1. Open an [Issue](https://github.com/telnetdoogie/synology-docker/issues)
-2. [Fork the repo](https://github.com/telnetdoogie/synology-docker/fork)
+1. Open an [Issue](https://github.com/telnetdoogie-labs/synology-docker/issues)
+2. [Fork the repo](https://github.com/telnetdoogie-labs/synology-docker/fork)
 3. Make and test your change on real hardware
 4. Submit a PR back to this repo, and link with a comment to the Issue you created.
 5. Provide details on what you did, what you've tested it on, and the results of those tests.

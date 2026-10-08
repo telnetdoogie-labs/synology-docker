@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 #======================================================================================================================
 # Title         : syno_docker_update.sh
@@ -29,12 +29,17 @@ validate_dependencies(){
   # Define the presence of dependent files
   DEPENDENT_FILES=(
     "container_recreate.sh"
+    "install_apparmor_profile.sh"
+    "install_iptables_modules.sh"
     "syno_docker_list_containers.sh"
     "syno_docker_switch_logger.sh")
   # Loop through each file in the array and check if it exists
   for file in "${DEPENDENT_FILES[@]}"; do
     if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
       terminate "Error: Required file '$file' is missing in the script directory ($SCRIPT_DIR). You may need to do a git pull."
+    fi
+    if [[ "$file" != 'install_apparmor_profile.sh' && ! -x "$SCRIPT_DIR/$file" ]]; then
+      terminate "Required file '$file' is not executable in $SCRIPT_DIR"
     fi
   done
 }
@@ -45,23 +50,25 @@ validate_dependencies(){
 readonly RED='\e[31m' # Red color
 readonly NC='\e[m' # No color / reset
 readonly BOLD='\e[1m' # Bold font
-readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-readonly DSM_SUPPORTED_VERSION=6
-readonly DEFAULT_DOCKER_VERSION='20.10.11'
-readonly DEFAULT_COMPOSE_VERSION='2.1.1'
+SCRIPT_DIR=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+readonly SCRIPT_DIR
 readonly CPU_ARCH='x86_64'
 readonly DOWNLOAD_DOCKER="https://download.docker.com/linux/static/stable/${CPU_ARCH}"
 readonly DOWNLOAD_GITHUB='https://github.com/docker/compose'
 readonly PINNED_RUNC='https://github.com/opencontainers/runc/releases/download/v1.3.2/runc.amd64'
 readonly GITHUB_API_COMPOSE='https://api.github.com/repos/docker/compose/releases/latest'
-if [ -d "/var/packages/ContainerManager" ]; then
+readonly UPDATE_CURL_HTTPS_FLAGS=(--proto '=https' --proto-redir '=https' --tlsv1.2)
+curl_https_update() {
+  curl "$@" "${UPDATE_CURL_HTTPS_FLAGS[@]}"
+}
+if [[ -d "/var/packages/ContainerManager" ]]; then
   readonly SYNO_DOCKER_DIR='/var/packages/ContainerManager'
   readonly SYNO_DOCKER_SERV_NAME='ContainerManager'
-elif [ -d "/var/packages/Docker" ]; then
+elif [[ -d "/var/packages/Docker" ]]; then
   readonly SYNO_DOCKER_DIR='/var/packages/Docker'
   readonly SYNO_DOCKER_SERV_NAME='Docker'
 fi
-if [ -z "$SYNO_DOCKER_DIR" ]; then
+if [[ -z "$SYNO_DOCKER_DIR" ]]; then
   terminate "Docker (or ContainerManager) folder was not found."
 fi
 readonly SYNO_DOCKER_BIN_PATH="${SYNO_DOCKER_DIR}/target/usr"
@@ -77,9 +84,9 @@ readonly SYNOSERVICECTL_BIN='/usr/syno/sbin/synoservicectl'
 if ! RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | awk 'NF' | wc -l); then
   RUNNING_CONTAINERS=0
 fi
-if [ "$RUNNING_CONTAINERS" -gt 5 ]; then
+if [[ "$RUNNING_CONTAINERS" -gt 5 ]]; then
   computed_timeout=$(( (RUNNING_CONTAINERS * 3) / 2 ))
-  if [ "$computed_timeout" -lt 10 ]; then
+  if [[ "$computed_timeout" -lt 10 ]]; then
     readonly SYNO_SERVICE_START_TIMEOUT=10m
   else
     readonly SYNO_SERVICE_START_TIMEOUT=$(( (RUNNING_CONTAINERS * 3) / 2 ))m
@@ -94,9 +101,9 @@ fi
 dsm_major_version=''
 docker_version=''
 compose_version=''
-temp_dir="/tmp/docker_update"
+temp_dir=''
 backup_dir="${PWD}"
-download_dir="${temp_dir}"
+download_dir=''
 docker_backup_filename="docker_backup_$(date +%Y%m%d_%H%M%S).tgz"
 skip_docker_update='false'
 skip_compose_update='false'
@@ -107,12 +114,16 @@ command=''
 target='all'
 target_docker_version=''
 target_compose_version=''
+target_docker_explicit='false'
+target_compose_explicit='false'
 backup_filename_flag='false'
 step=0
 total_steps=0
 install_iptables_modules='false'
 skip_iptables_modules='false'
 install_apparmor='false'
+service_stopped='false'
+preserve_stage='false'
 
 
 #======================================================================================================================
@@ -136,7 +147,7 @@ usage() {
   echo "  -d, --docker VERSION   Docker target version (defaults to latest)"
   echo "  -f, --force            Force update (bypass compatibility check and confirmation check)"
   echo "  -p, --path PATH        Path of the backup (defaults to '${backup_dir}')"
-  echo "  -s, --stage            Stage only, do not actually replace binaries or configuration of log driver"
+  echo "  -s, --stage            Stage only; retain downloads without replacing binaries or configuration"
   echo "  -t, --target           Target to update, either 'all' (default), 'engine', 'compose', or 'driver'"
   echo "  --skip-iptables        Do not check for / install iptables modules"
 
@@ -191,7 +202,7 @@ detect_current_versions() {
 
   # Detect current Docker Compose version
   compose_version=$(docker-compose -v 2>/dev/null | grep -Eo "v[0-9]+.[0-9]*.[0-9]*" | cut -c 2-)
-  if [ -z "${compose_version}" ] ; then
+  if [[ -z "${compose_version}" ]] ; then
     compose_version=$(docker-compose -v 2>/dev/null | grep -Eo "[0-9]*.[0-9]*.[0-9]*," | cut -d',' -f 1)
   fi
 
@@ -204,7 +215,7 @@ detect_current_versions() {
   echo "Current containerd version: ${containerd_version:-Unknown}"
   echo "Current runc version: ${runc_version:-Unknown}"
 
-  if [ "${force}" != 'true' ] ; then
+  if [[ "${force}" != 'true' ]] ; then
     validate_current_version
   fi
 }
@@ -224,22 +235,22 @@ detect_current_versions() {
 validate_current_version() {
   # Test host has supported CPU, exit otherwise
   current_arch=$(uname -m)
-  if [ "${current_arch}" != "${CPU_ARCH}" ]; then
+  if [[ "${current_arch}" != "${CPU_ARCH}" ]]; then
     terminate "This script supports ${CPU_ARCH} CPUs only, use --force to override"
   fi
 
-  # Test if host is DSM 6 or later, exit otherwise
-  if [ "${dsm_major_version}" -lt "${DSM_SUPPORTED_VERSION}" ] ; then
-    terminate "This script supports DSM 6.x or later only, use --force to override"
-  fi
+  case "${dsm_major_version}" in
+    6 | 7 ) ;;
+    * ) terminate "This script supports DSM 6 and 7 only" ;;
+  esac
 
   # Test Docker version is present, exit otherwise
-  if [ -z "${docker_version}" ] && [ "${skip_docker_update}" = 'false' ] ; then
+  if [[ -z "${docker_version}" ]] && [[ "${skip_docker_update}" = 'false' ]] ; then
     terminate "Could not detect current Docker version, use --force to override"
   fi
 
   # Test Docker Compose version is present, exit otherwise
-  if [ -z "${compose_version}" ] && [ "${skip_compose_update}" = 'false' ]; then
+  if [[ -z "${compose_version}" ]] && [[ "${skip_compose_update}" = 'false' ]]; then
     terminate "Could not detect current Docker Compose version, use --force to override"
   fi
 }
@@ -253,19 +264,37 @@ validate_current_version() {
 # Outputs:
 #   Updated 'target_docker_version'.
 #======================================================================================================================
+is_semver() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+version_is_newer() {
+  local left_major left_minor left_patch right_major right_minor right_patch
+  IFS=. read -r left_major left_minor left_patch <<< "$1"
+  IFS=. read -r right_major right_minor right_patch <<< "$2"
+  (( 10#$left_major > 10#$right_major ||
+    (10#$left_major == 10#$right_major && 10#$left_minor > 10#$right_minor) ||
+    (10#$left_major == 10#$right_major && 10#$left_minor == 10#$right_minor &&
+      10#$left_patch > 10#$right_patch) ))
+}
+
 detect_available_downloads() {
-  if [ -z "${target_docker_version}" ] ; then
-    downloads=$(find "${download_dir}/" -maxdepth 1 -type f | cut -c 4- | \
-      grep -Eo 'docker-[0-9]*.[0-9]*.[0-9]*(-ce)?.tgz')
-    latest_download=$(echo "${downloads}" | sort -bt. -k1,1 -k2,2n -k3,3n -k4,4n -k5,5n | tail -1)
-    target_docker_version=$(echo "${latest_download}" | sed "s/docker-//g" | sed "s/.tgz//g")
+  if [[ -z "${target_docker_version}" ]]; then
+    for archive in "${download_dir}"/docker-*.tgz; do
+      [[ -f "$archive" ]] || continue
+      candidate=${archive##*/}
+      candidate=${candidate#docker-}
+      candidate=${candidate%.tgz}
+      if is_semver "$candidate" && { [[ -z "$target_docker_version" ]] || version_is_newer "$candidate" "$target_docker_version"; }; then
+        target_docker_version=$candidate
+      fi
+    done
   fi
 }
 
 #======================================================================================================================
 # Detects latest stable versions of Docker and Docker Compose available for download. The detection is skipped if a
-# specific target Docker and/or Compose version is already specified. Default versions are assigned if the detection
-# fails for some reason.
+# specific target Docker and/or Compose version is already specified. Version lookup failures stop the operation.
 #======================================================================================================================
 # Globals:
 #   - target_docker_version
@@ -277,25 +306,25 @@ detect_available_downloads() {
 #======================================================================================================================
 detect_available_versions() {
   # Detect latest available Docker version
-  if [ -z "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] ; then
-    docker_bin_files=$(curl -s "${DOWNLOAD_DOCKER}/" | grep -Eo '>docker-[0-9]*.[0-9]*.[0-9]*(-ce)?.tgz' | cut -c 2-)
-    latest_docker_bin="$(echo "${docker_bin_files}" | sort -bt. -k1,1 -k2,2n -k3,3n -k4,4n -k5,5n | tail -1)"
-    target_docker_version=$(echo "${latest_docker_bin}" | sed "s/docker-//g" | sed "s/.tgz//g" )
-
-    if [ -z "${target_docker_version}" ] ; then
-      echo "Could not detect Docker versions available for download, setting default value"
-      target_docker_version="${DEFAULT_DOCKER_VERSION}"
-    fi
+  if [[ -z "${target_docker_version}" ]] && [[ "${skip_docker_update}" = 'false' ]]; then
+    docker_index=$(curl_https_update -fsSL "${DOWNLOAD_DOCKER}/") || terminate "Could not query available Docker versions"
+    docker_bin_files=$(printf '%s\n' "$docker_index" | grep -Eo '>docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' | cut -c 2-)
+    while IFS= read -r docker_bin; do
+      [[ -n "$docker_bin" ]] || continue
+      candidate=${docker_bin#docker-}
+      candidate=${candidate%.tgz}
+      if [[ -z "$target_docker_version" ]] || version_is_newer "$candidate" "$target_docker_version"; then
+        target_docker_version=$candidate
+      fi
+    done <<< "$docker_bin_files"
+    [[ -n "$target_docker_version" ]] || terminate "Could not detect Docker versions available for download"
   fi
 
   # Detect latest available stable Docker Compose version (ignores release candidates)
-  if [ -z "${target_compose_version}" ] && [ "${skip_compose_update}" = 'false' ] ; then
-    target_compose_version=$(curl -s "${GITHUB_API_COMPOSE}" | jq -r '.tag_name | ltrimstr("v")')
-
-    if [ -z "${target_compose_version}" ] || [ "${target_compose_version}" = "null" ] ; then
-      echo "Could not detect Docker Compose versions available for download, setting default value"
-      target_compose_version="${DEFAULT_COMPOSE_VERSION}"
-    fi
+  if [[ -z "${target_compose_version}" ]] && [[ "${skip_compose_update}" = 'false' ]]; then
+    compose_release=$(curl_https_update -fsSL "${GITHUB_API_COMPOSE}") || terminate "Could not query available Docker Compose versions"
+    target_compose_version=$(printf '%s\n' "$compose_release" | jq -er '.tag_name | ltrimstr("v")') || terminate "Could not detect Docker Compose version"
+    is_semver "$target_compose_version" || terminate "Unrecognized available Docker Compose version: $target_compose_version"
   fi
 }
 
@@ -312,12 +341,12 @@ detect_available_versions() {
 #======================================================================================================================
 validate_available_versions() {
   # Test Docker is available for download, exit otherwise
-  if [ -z "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] ; then
+  if [[ -z "${target_docker_version}" ]] && [[ "${skip_docker_update}" = 'false' ]] ; then
     terminate "Could not find Docker binaries for downloading"
   fi
 
   # Test Docker Compose is available for download, exit otherwise
-  if [ -z "${target_compose_version}" ] && [ "${skip_compose_update}" = 'false' ] ; then
+  if [[ -z "${target_compose_version}" ]] && [[ "${skip_compose_update}" = 'false' ]] ; then
     terminate "Could not find Docker Compose binaries for downloading"
   fi
 }
@@ -339,12 +368,12 @@ validate_available_versions() {
 validate_downloaded_versions() {
   # Test Docker archive is available on path
   target_docker_bin="docker-${target_docker_version}.tgz"
-  if [ ! -f "${download_dir}/${target_docker_bin}" ] && [ "${skip_docker_update}" = 'false' ] ; then
+  if [[ ! -f "${download_dir}/${target_docker_bin}" ]] && [[ "${skip_docker_update}" = 'false' ]] ; then
     terminate "Could not find Docker archive (${download_dir}/${target_docker_bin})"
   fi
 
   # Test Docker-compose binary is available on path
-  if [ ! -f "${download_dir}/docker-compose" ] && [ "${skip_compose_update}" = 'false' ] ; then
+  if [[ ! -f "${download_dir}/docker-compose" ]] && [[ "${skip_compose_update}" = 'false' ]] ; then
     terminate "Could not find Docker compose binary (${download_dir}/docker-compose)"
   fi
 }
@@ -361,7 +390,7 @@ validate_downloaded_versions() {
 #======================================================================================================================
 validate_version_input() {
   validation=$(echo "$1" | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+$')
-  if [ "${validation}" != "$1" ] ; then
+  if [[ "${validation}" != "$1" ]] ; then
     usage
     terminate "$2"
   fi
@@ -382,7 +411,7 @@ validate_version_input() {
 validate_backup_filename() {
   # check filename is provided
   prefix=$(echo "${docker_backup_filename}" | cut -c1)
-  if [ -z "${docker_backup_filename}" ] || [ "${prefix}" = "-" ] ; then
+  if [[ -z "${docker_backup_filename}" ]] || [[ "${prefix}" = "-" ]] ; then
     usage
     terminate "$1"
   fi
@@ -390,7 +419,7 @@ validate_backup_filename() {
   # split into directory and filename if applicable
   # TODO: test
   basepath=$(dirname "${docker_backup_filename}")
-  if [ -z "${basepath}" ] || [ "${basepath}" != "." ]; then
+  if [[ -z "${basepath}" ]] || [[ "${basepath}" != "." ]]; then
     abs_path_and_file=$(readlink -f "${docker_backup_filename}")
     backup_dir=$(dirname "${abs_path_and_file}")
     docker_backup_filename=$(basename "${abs_path_and_file}")
@@ -413,7 +442,7 @@ validate_backup_filename() {
 validate_provided_download_path() {
   # check PATH is provided
   prefix=$(echo "${download_dir}" | cut -c1)
-  if [ -z "${download_dir}" ] || [ "${prefix}" = "-" ] ; then
+  if [[ -z "${download_dir}" ]] || [[ "${prefix}" = "-" ]] ; then
     usage
     terminate "$1"
   fi
@@ -422,7 +451,7 @@ validate_provided_download_path() {
   download_dir=$(readlink -f "${download_dir}")
 
   # check PATH exists
-  if [ ! -d "${download_dir}" ] ; then
+  if [[ ! -d "${download_dir}" ]] ; then
     usage
     terminate "$2"
   fi
@@ -446,7 +475,7 @@ validate_provided_download_path() {
 validate_provided_backup_path() {
   # check PATH is provided
   prefix=$(echo "${backup_dir}" | cut -c1)
-  if [ -z "${backup_dir}" ] || [ "${prefix}" = "-" ] ; then
+  if [[ -z "${backup_dir}" ]] || [[ "${prefix}" = "-" ]] ; then
     usage
     terminate "$1"
   fi
@@ -455,13 +484,13 @@ validate_provided_backup_path() {
   backup_dir=$(readlink -f "${backup_dir}")
 
   # check PATH exists
-  if [ ! -d "${backup_dir}" ] ; then
+  if [[ ! -d "${backup_dir}" ]] ; then
     usage
     terminate "$2"
   fi
 
   # confirm backup dir is different from temp dir
-  if [ "${backup_dir}" = "${temp_dir}" ] ; then
+  if [[ "${backup_dir}" = "${temp_dir}" ]] ; then
     usage
     terminate "$3"
   fi
@@ -527,33 +556,48 @@ validate_target() {
 #   Terminates with non-zero exit code if both Docker and Docker Compose are already up to date, unless forced.
 #======================================================================================================================
 define_update() {
-  if [ "${force}" != 'true' ] ; then
-    if [ "${docker_version}" = "${target_docker_version}" ] && \
-      [ "${compose_version}" = "${target_compose_version}" ] ; then
-      terminate_with_warning "Already on target version for Docker and Docker Compose"
+  if [[ "${skip_docker_update}" = 'false' ]]; then
+    if is_semver "$docker_version" && version_is_newer "$docker_version" "$target_docker_version" &&
+      { [[ "$force" != 'true' ]] || [[ "$target_docker_explicit" != 'true' ]]; }; then
+      terminate "Target Docker version is older than installed version; specify --docker VERSION --force to downgrade"
     fi
-    major="${target_docker_version%%.*}"
-    if [[ "$major" -ge 28 && "${skip_iptables_modules}" = 'false' ]]; then
-      install_iptables_modules='true'
-      total_steps=$((total_steps+1))
-    fi
-    if [[ "$major" -ge 29 ]]; then
-      install_apparmor='true'
-      total_steps=$((total_steps+1))
-    fi
-    if [ "${docker_version}" = "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] ; then
+    if [[ "$force" != 'true' ]] && [[ "$docker_version" = "$target_docker_version" ]]; then
       skip_docker_update='true'
       total_steps=$((total_steps-1))
     fi
-    if [ "${compose_version}" = "${target_compose_version}" ] && [ "${skip_compose_update}" = 'false' ]; then
+  fi
+  if [[ "${skip_compose_update}" = 'false' ]]; then
+    if is_semver "$compose_version" && version_is_newer "$compose_version" "$target_compose_version" &&
+      { [[ "$force" != 'true' ]] || [[ "$target_compose_explicit" != 'true' ]]; }; then
+      terminate "Target Docker Compose version is older than installed version; specify --compose VERSION --force to downgrade"
+    fi
+    if [[ "$force" != 'true' ]] && [[ "$compose_version" = "$target_compose_version" ]]; then
       skip_compose_update='true'
       total_steps=$((total_steps-1))
     fi
-
-    log_driver=$(jq -r '.["log-driver"] // empty' "${SYNO_DOCKER_JSON}")
-    if [ "$log_driver" = "local" ]; then
+  fi
+  if [[ "${skip_driver_update}" = 'false' ]] && [[ "$force" != 'true' ]]; then
+    log_driver=$(jq -r '.["log-driver"] // empty' "${SYNO_DOCKER_JSON}") || terminate "Could not read Docker daemon configuration"
+    if [[ "$log_driver" = 'local' ]]; then
       skip_driver_update='true'
       total_steps=$((total_steps-1))
+    fi
+  fi
+  if [[ "$skip_docker_update" = 'true' ]] && [[ "$skip_compose_update" = 'true' ]] && [[ "$skip_driver_update" = 'true' ]]; then
+    terminate_with_warning "Docker and Docker Compose are already on target versions"
+  fi
+}
+
+prepare_engine_requirements() {
+  if [[ "$skip_docker_update" = 'false' ]]; then
+    major=${target_docker_version%%.*}
+    if (( 10#$major >= 28 )) && [[ "$skip_iptables_modules" = 'false' ]]; then
+      install_iptables_modules='true'
+      total_steps=$((total_steps+1))
+    fi
+    if (( 10#$major >= 29 )); then
+      install_apparmor='true'
+      total_steps=$((total_steps+1))
     fi
   fi
 }
@@ -567,7 +611,7 @@ define_update() {
 #   Terminates with non-zero exit code if no backup file is provided.
 #======================================================================================================================
 define_restore() {
-  if [ "${backup_filename_flag}" != 'true' ]; then
+  if [[ "${backup_filename_flag}" != 'true' ]]; then
     terminate "Please specify backup filename (--backup NAME)"
   fi
 }
@@ -584,8 +628,8 @@ define_restore() {
 #======================================================================================================================
 define_target_version() {
   detect_available_versions
-  [ "${skip_docker_update}" = 'false' ] && echo "Target Docker version: ${target_docker_version:-Unknown}"
-  [ "${skip_compose_update}" = 'false' ] && echo "Target Docker Compose version: ${target_compose_version:-Unknown}"
+  [[ "${skip_docker_update}" = 'false' ]] && echo "Target Docker version: ${target_docker_version:-Unknown}"
+  [[ "${skip_compose_update}" = 'false' ]] && echo "Target Docker Compose version: ${target_compose_version:-Unknown}"
   validate_available_versions
 }
 
@@ -600,9 +644,16 @@ define_target_version() {
 #======================================================================================================================
 define_target_download() {
   detect_available_downloads
-  [ "${skip_docker_update}" = 'false' ] && echo "Target Docker version: ${target_docker_version:-Unknown}"
-  [ "${skip_compose_update}" = 'false' ] && echo "Target Docker Compose version: Unknown"
+  [[ "${skip_docker_update}" = 'false' ]] && echo "Target Docker version: ${target_docker_version:-Unknown}"
+  [[ "${skip_compose_update}" = 'false' ]] && echo "Target Docker Compose version: Unknown"
   validate_downloaded_versions
+}
+
+validate_offline_target() {
+  if [[ "$skip_docker_update" = 'false' ]] && [[ "$force" != 'true' ]] && is_semver "$docker_version" &&
+    version_is_newer "$docker_version" "$target_docker_version"; then
+    terminate "Offline Docker archive is older than installed version; use --force to downgrade"
+  fi
 }
 
 #======================================================================================================================
@@ -617,12 +668,12 @@ define_target_download() {
 #   Terminates with zero exit code if user does not confirm the operation.
 #======================================================================================================================
 confirm_operation() {
-  if [ "${force}" != 'true' ] ; then
+  if [[ "${force}" != 'true' ]] ; then
     echo
     echo "WARNING! This will replace:"
-    [ "${skip_docker_update}" = "false" ]  && echo "  - Docker Engine"
-    [ "${skip_compose_update}" = "false" ] && echo "  - Docker Compose"
-    [ "${skip_driver_update}" = "false" ]  && echo "  - Docker daemon log driver"
+    [[ "${skip_docker_update}" = "false" ]]  && echo "  - Docker Engine"
+    [[ "${skip_compose_update}" = "false" ]] && echo "  - Docker Compose"
+    [[ "${skip_driver_update}" = "false" ]]  && echo "  - Docker daemon log driver"
     echo
 
     while true; do
@@ -655,7 +706,7 @@ resolve_syno_bin() {
   local bin_name="$1"
   local well_known_path="$2"
 
-  if [ -x "${well_known_path}" ]; then
+  if [[ -x "${well_known_path}" ]]; then
     echo "${well_known_path}"
   elif command -v "${bin_name}" >/dev/null 2>&1; then
     command -v "${bin_name}"
@@ -676,7 +727,7 @@ resolve_syno_bin() {
 #   Terminates with a non-zero exit code if the required tool cannot be resolved, unless 'stage' is true.
 #======================================================================================================================
 validate_syno_tools() {
-  if [ "${stage}" = 'true' ] ; then
+  if [[ "${stage}" = 'true' ]] ; then
     return
   fi
 
@@ -687,6 +738,9 @@ validate_syno_tools() {
     "7")
       resolve_syno_bin "synopkg" "${SYNOPKG_BIN}" >/dev/null
       ;;
+    *)
+      terminate "Unsupported DSM major version: ${dsm_major_version}"
+      ;;
   esac
 }
 
@@ -695,16 +749,18 @@ validate_syno_tools() {
 #======================================================================================================================
 
 #======================================================================================================================
-# Recreates an empty temp folder.
+# Creates a private temp folder for this run.
 #======================================================================================================================
 # Globals:
 #   - temp_dir
 # Outputs:
-#   An empty temp folder.
+#   An empty private temp folder.
 #======================================================================================================================
 execute_prepare() {
-  execute_clean 'silent'
-  mkdir -p "${temp_dir}"
+  temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/docker_update.XXXXXX") || terminate "Could not create a private temp directory"
+  if [[ -z "$download_dir" ]]; then
+    download_dir=$temp_dir
+  fi
 }
 
 #======================================================================================================================
@@ -718,32 +774,38 @@ execute_prepare() {
 execute_stop_syno() {
   print_status "Stopping Docker service"
 
-  if [ "${stage}" = 'false' ] ; then
+  if [[ "${stage}" = 'false' ]] ; then
+    service_stopped='true'
     case "${dsm_major_version}" in
       "6")
         synoservicectl_bin=$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")
         syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep running -o)
-        if [ "${syno_status}" = 'running' ] ; then
+        if [[ "${syno_status}" = 'running' ]] ; then
           timeout --foreground "${SYNO_SERVICE_STOP_TIMEOUT}" "${synoservicectl_bin}" --stop "${SYNO_DOCKER_SERV_NAME}"
           syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep stop -o)
-          if [ "${syno_status}" != 'stop' ] ; then
+          if [[ "${syno_status}" != 'stop' ]] ; then
             terminate "Could not stop Docker daemon"
           fi
+        elif [[ "$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep stop -o)" != 'stop' ]]; then
+          terminate "Could not determine Docker daemon status"
         fi
         ;;
       "7")
         synopkg_bin=$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")
         syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep started -o)
-        if [ "${syno_status}" = 'started' ] ; then
+        if [[ "${syno_status}" = 'started' ]] ; then
           timeout --foreground "${SYNO_SERVICE_STOP_TIMEOUT}" "${synopkg_bin}" stop "${SYNO_DOCKER_SERV_NAME}"
           syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep stopped -o)
-          if [ "${syno_status}" != 'stopped' ] ; then
+          if [[ "${syno_status}" != 'stopped' ]] ; then
             terminate "Could not stop Docker daemon"
           fi
+        elif [[ "$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep stopped -o)" != 'stopped' ]]; then
+          terminate "Could not determine Docker daemon status"
         fi
         ;;
       *)
-        echo "ERROR: Cannot stop Docker package, unsupported DSM version: ${dsm_major_version}"
+        terminate "Cannot stop Docker package on unsupported DSM version: ${dsm_major_version}"
+        ;;
     esac
   else
     echo "Skipping Docker service control in STAGE mode"
@@ -752,7 +814,7 @@ execute_stop_syno() {
 
 #======================================================================================================================
 # Creates a backup of the current Docker binaries (including Docker Compose), Docker daemon configuration, and
-# the 'start-stop-status' script.
+# the 'start-stop-status' script and any managed AppArmor profile.
 #======================================================================================================================
 # Globals:
 #   - backup_dir
@@ -761,12 +823,28 @@ execute_stop_syno() {
 #   A backup archive.
 #======================================================================================================================
 execute_backup() {
-  print_status "Backing up current Docker binaries (${backup_dir}/${docker_backup_filename})"
-  cd "${backup_dir}" || terminate "Backup directory does not exist"
-  tar -czvf "${docker_backup_filename}" -C "$SYNO_DOCKER_BIN_PATH" bin -C "$SYNO_DOCKER_JSON_PATH" "dockerd.json" \
-    -C "${SYNO_DOCKER_SCRIPT_PATH}" "start-stop-status"
-  if [ ! -f "${docker_backup_filename}" ] ; then
-    terminate "Backup issue"
+  local backup_file backup_temp
+  local -a backup_sources
+  backup_file="${backup_dir}/${docker_backup_filename}"
+  print_status "Backing up current Docker binaries ($backup_file)"
+  [[ -d "$backup_dir" ]] || terminate "Backup directory does not exist"
+  if [[ -e "$backup_file" ]] || [[ -L "$backup_file" ]]; then
+    terminate "Backup already exists: $backup_file"
+  fi
+  backup_sources=(-C "$SYNO_DOCKER_BIN_PATH" bin -C "$SYNO_DOCKER_JSON_PATH" dockerd.json
+    -C "$SYNO_DOCKER_SCRIPT_PATH" start-stop-status)
+  if [[ -f "${SYNO_DOCKER_JSON_PATH}/docker-default.profile.synology-docker-managed" ]]; then
+    [[ -f "${SYNO_DOCKER_JSON_PATH}/docker-default.profile" ]] || terminate "Managed AppArmor profile is missing"
+    backup_sources+=(-C "$SYNO_DOCKER_JSON_PATH" docker-default.profile docker-default.profile.synology-docker-managed)
+  fi
+  backup_temp=$(mktemp "${backup_file}.XXXXXX") || terminate "Could not create temporary backup"
+  if ! tar -czvf "$backup_temp" "${backup_sources[@]}" || ! tar -tzf "$backup_temp" >/dev/null; then
+    rm -f "$backup_temp"
+    terminate "Could not create a complete Docker backup"
+  fi
+  if ! mv "$backup_temp" "$backup_file"; then
+    rm -f "$backup_temp"
+    terminate "Could not finalize Docker backup"
   fi
 }
 
@@ -781,12 +859,12 @@ execute_backup() {
 #   A downloaded Docker binaries archive, or a non-zero exit code if the download has failed.
 #======================================================================================================================
 execute_download_bin() {
-  if [ "${skip_docker_update}" = 'false' ] ; then
+  if [[ "${skip_docker_update}" = 'false' ]] ; then
     target_docker_bin="docker-${target_docker_version}.tgz"
     print_status "Downloading target Docker binary (${DOWNLOAD_DOCKER}/${target_docker_bin})"
-    response=$(curl "${DOWNLOAD_DOCKER}/$target_docker_bin" --write-out '%{http_code}' \
+    response=$(curl_https_update "${DOWNLOAD_DOCKER}/$target_docker_bin" --write-out '%{http_code}' \
       -o "${download_dir}/${target_docker_bin}")
-    if [ "${response}" != 200 ] ; then
+    if [[ "${response}" != 200 ]] ; then
       terminate "Binary could not be downloaded"
     fi
   fi
@@ -804,28 +882,28 @@ execute_download_bin() {
 #   An extracted Docker binaries archive, or a non-zero exit code if the extraction has failed.
 #======================================================================================================================
 execute_extract_bin() {
-  if [ "${skip_docker_update}" = 'false' ] ; then
+  if [[ "${skip_docker_update}" = 'false' ]] ; then
     target_docker_bin="docker-${target_docker_version}.tgz"
     print_status "Extracting target Docker binary (${download_dir}/${target_docker_bin})"
 
-    if [ ! -f "${download_dir}/${target_docker_bin}" ] ; then
+    if [[ ! -f "${download_dir}/${target_docker_bin}" ]] ; then
       terminate "Docker binary archive not found"
     fi
 
     cd "${temp_dir}" || terminate "Temp directory does not exist"
-    tar -zxvf "${download_dir}/${target_docker_bin}"
-    if [ ! -d "docker" ] ; then
-      terminate "Files could not be extracted from archive"
+    tar -zxvf "${download_dir}/${target_docker_bin}" || terminate "Could not extract Docker archive"
+    if [[ ! -f "docker/docker" ]] || [[ ! -f "docker/dockerd" ]]; then
+      terminate "Docker binaries could not be extracted from archive"
     fi
 
     # override runc binary on Kernels 5+ is present
     if uname -r | grep -q '^5\.'; then
       print_status "Detected Kernel v5, downloading / pinning runc version."
-      response=$(curl -L "${PINNED_RUNC}" --write-out '%{http_code}' -o "${temp_dir}/docker/runc")
-      if [ "${response}" != 200 ] ; then
+      response=$(curl_https_update -L "${PINNED_RUNC}" --write-out '%{http_code}' -o "${temp_dir}/docker/runc")
+      if [[ "${response}" != 200 ]] ; then
         terminate "runc binary could not be downloaded"
       fi
-      chmod +x "${temp_dir}/docker/runc"
+      chmod +x "${temp_dir}/docker/runc" || terminate "Could not set runc executable permission"
     fi
   fi
 }
@@ -844,22 +922,29 @@ execute_extract_bin() {
 execute_extract_backup() {
   print_status "Extracting Docker backup (${backup_dir}/${docker_backup_filename})"
 
-  if [ ! -f "${backup_dir}/${docker_backup_filename}" ] ; then
+  if [[ ! -f "${backup_dir}/${docker_backup_filename}" ]] ; then
     terminate "Backup file not found"
   fi
 
   cd "${temp_dir}" || terminate "Temp directory does not exist"
-  tar -zxvf "${backup_dir}/${docker_backup_filename}"
-  mv bin docker
+  tar -tzf "${backup_dir}/${docker_backup_filename}" >/dev/null || terminate "Backup archive is invalid"
+  tar -zxvf "${backup_dir}/${docker_backup_filename}" || terminate "Could not extract Docker backup"
+  mv bin docker || terminate "Docker binaries could not be extracted from archive"
 
-  if [ ! -d "docker" ] ; then
+  if [[ ! -d "docker" ]] ; then
     terminate "Docker binaries could not be extracted from archive"
   fi
-  if [ ! -f "docker/docker-compose" ] ; then
+  if [[ ! -f "docker/docker-compose" ]] ; then
     terminate "Docker compose binary could not be extracted from archive"
   fi
-  if [ ! -f "dockerd.json" ] ; then
+  if [[ ! -f "dockerd.json" ]] ; then
     terminate "Log driver configuration could not be extracted from archive"
+  fi
+  if [[ ! -f "start-stop-status" ]]; then
+    terminate "Docker start-stop-status script could not be extracted from archive"
+  fi
+  if [[ -f "docker-default.profile.synology-docker-managed" ]] && [[ ! -f "docker-default.profile" ]]; then
+    terminate "Managed AppArmor profile could not be extracted from archive"
   fi
 }
 
@@ -876,19 +961,19 @@ execute_extract_backup() {
 #   A downloaded Docker Compose binary, or a non-zero exit code if the download has failed.
 #======================================================================================================================
 execute_download_compose() {
-  if [ "${skip_compose_update}" = 'false' ] ; then
+  if [[ "${skip_compose_update}" = 'false' ]] ; then
     major_compose=$(echo "${target_compose_version}" | cut -d "." -f1)
     base_path="${DOWNLOAD_GITHUB}/releases/download"
     # as of version 2, the download path uses a 'v' prefix and is in lower case
     compose_bin="${base_path}/v${target_compose_version}/docker-compose-linux-${CPU_ARCH}"
-    if [ "${major_compose}" -lt 2 ] ; then
+    if [[ "${major_compose}" -lt 2 ]] ; then
       # below version 2, the download path does not use a 'v' prefix and uses sentence case for the platform
       compose_bin="${base_path}/${target_compose_version}/docker-compose-Linux-${CPU_ARCH}"
     fi
 
     print_status "Downloading target Docker Compose binary (${compose_bin})"
-    response=$(curl -L "${compose_bin}" --write-out '%{http_code}' -o "${download_dir}/docker-compose")
-    if [ "${response}" != 200 ] ; then
+    response=$(curl_https_update -L "${compose_bin}" --write-out '%{http_code}' -o "${download_dir}/docker-compose")
+    if [[ "${response}" != 200 ]] ; then
       terminate "Binary could not be downloaded"
     fi
   fi
@@ -909,16 +994,20 @@ execute_download_compose() {
 #======================================================================================================================
 execute_install_bin() {
   print_status "Installing binaries"
-  if [ "${stage}" = 'false' ] ; then
-    if [ "${skip_docker_update}" = 'false' ] ; then
-      cp "${temp_dir}"/docker/* "${SYNO_DOCKER_BIN}"/
+  if [[ "${stage}" = 'false' ]] ; then
+    if [[ "$skip_docker_update" = 'true' ]] && [[ "$skip_compose_update" = 'true' ]]; then
+      echo "Skipping binary installation in TARGET mode"
+      return 0
     fi
-    if [ "${skip_compose_update}" = 'false' ] ; then
-      cp "${download_dir}"/docker-compose "${SYNO_DOCKER_BIN}"/docker-compose
+    if [[ "${skip_docker_update}" = 'false' ]] ; then
+      cp "${temp_dir}"/docker/* "${SYNO_DOCKER_BIN}"/ || terminate "Could not install Docker Engine binaries"
     fi
-    chown root:root "${SYNO_DOCKER_BIN}"/*
-    chmod +x "${SYNO_DOCKER_BIN}"/*
-    mkdir -p /var/lib/docker/volumes  # creates folder to improve compatability for some containers
+    if [[ "${skip_compose_update}" = 'false' ]] ; then
+      cp "${download_dir}"/docker-compose "${SYNO_DOCKER_BIN}"/docker-compose || terminate "Could not install Docker Compose binary"
+    fi
+    chown root:root "${SYNO_DOCKER_BIN}"/* || terminate "Could not set Docker binary ownership"
+    chmod +x "${SYNO_DOCKER_BIN}"/* || terminate "Could not set Docker binary permissions"
+    mkdir -p /var/lib/docker/volumes || terminate "Could not create Docker volumes directory"  # creates folder to improve compatability for some containers
   else
     echo "Skipping installation in STAGE mode"
   fi
@@ -938,20 +1027,26 @@ execute_install_bin() {
 # TODO: validate this function
 execute_restore_bin() {
   print_status "Restoring binaries"
-  if [ "${stage}" = 'false' ] ; then
-    if [ "${skip_docker_update}" = 'true' ] && [ "${skip_compose_update}" = 'true' ] ; then
+  if [[ "${stage}" = 'false' ]] ; then
+    if [[ "${skip_docker_update}" = 'true' ]] && [[ "${skip_compose_update}" = 'true' ]] ; then
       echo "Skipping restore of binaries"
+      return 0
     fi
     # copy Docker Engine binaries
-    if [ "${skip_docker_update}" = 'false' ] ; then
-      find "${temp_dir}"/docker/ -type f \( ! -name docker-compose \) -print -exec cp -rpf '{}' "${SYNO_DOCKER_BIN}"/ ";"
+    if [[ "${skip_docker_update}" = 'false' ]] ; then
+      ( set -o pipefail
+        find "${temp_dir}/docker" -type f ! -name docker-compose -print0 |
+          while IFS= read -r -d '' binary; do
+            cp -rpf "$binary" "${SYNO_DOCKER_BIN}/" || exit 1
+          done
+      ) || terminate "Could not restore Docker Engine binaries"
     fi
     # copy Docker Compose
-    if [ "${skip_compose_update}" = 'false' ] ; then
-      cp "${temp_dir}"/docker/docker-compose "${SYNO_DOCKER_BIN}"/
+    if [[ "${skip_compose_update}" = 'false' ]] ; then
+      cp "${temp_dir}"/docker/docker-compose "${SYNO_DOCKER_BIN}"/ || terminate "Could not restore Docker Compose binary"
     fi
-    chown root:root "${SYNO_DOCKER_BIN}"/*
-    chmod +x "${SYNO_DOCKER_BIN}"/*
+    chown root:root "${SYNO_DOCKER_BIN}"/* || terminate "Could not set Docker binary ownership"
+    chmod +x "${SYNO_DOCKER_BIN}"/* || terminate "Could not set Docker binary permissions"
   else
     echo "Skipping restore in STAGE mode"
   fi
@@ -968,8 +1063,8 @@ execute_restore_bin() {
 #======================================================================================================================
 execute_update_log() {
   print_status "Configuring log driver"
-  if [ "${stage}" = 'false' ] && [ "${skip_driver_update}" = 'false' ] ; then
-    "${SCRIPT_DIR}/syno_docker_switch_logger.sh" "${SYNO_DOCKER_JSON}"
+  if [[ "${stage}" = 'false' ]] && [[ "${skip_driver_update}" = 'false' ]] ; then
+    "${SCRIPT_DIR}/syno_docker_switch_logger.sh" "${SYNO_DOCKER_JSON}" || terminate "Could not update Docker daemon log driver"
   else
     echo "Skipping configuration in STAGE mode or TARGET mode"
   fi
@@ -991,32 +1086,55 @@ execute_update_log() {
 # Outputs:
 #   Updated start-stop-status script.
 #======================================================================================================================
+validate_forwarding_anchor() {
+  if [[ "$command" != 'only_script' ]] && [[ "$skip_docker_update" = 'true' ]]; then
+    return 0
+  fi
+  if [[ "$stage" = 'false' ]] && ! grep -qE '^[[:space:]]*[$]DockerUpdaterBin postdaemonup[[:space:]]*$' "$SYNO_DOCKER_SCRIPT"; then
+    terminate "Cannot find Docker postdaemonup anchor in $SYNO_DOCKER_SCRIPT"
+  fi
+}
+
 execute_update_script() {
   print_status "Enabling IP forwarding"
-  if [ "${stage}" = 'false' ]; then
+  if [[ "$command" != 'only_script' ]] && [[ "$skip_docker_update" = 'true' ]]; then
+    echo "Skipping forwarding configuration in TARGET mode"
+    return 0
+  fi
+  if [[ "${stage}" = 'false' ]]; then
     # File to edit
+    local file match script_temp
     file="${SYNO_DOCKER_SCRIPT}"
 
     # Verify the insertion anchor exists before touching the file, so a missing anchor leaves
     # the file unmodified.
     match="^[[:space:]]*[$]DockerUpdaterBin postdaemonup[[:space:]]*$"
-    if grep -qE "${match}" "${file}"; then
-      # Remove any previously-inserted forwarding block, wherever it landed. Older versions of this script (and
-      # fix_ipforward.sh / switch_forward.sh) inserted it before 'start_docker_daemon'. Only the iptables FORWARD lines
-      # (and the comment directly above them) are removed; the identically-commented insmod block added by
-      # install_iptables_modules.sh is left untouched.
-      sed -i '/^[[:space:]]*iptables -C FORWARD -j DOCKER-FORWARD/d' "${file}"
-      sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "${file}"
-      sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -P FORWARD ACCEPT/d}' "${file}"
-      sed -i '/^[[:space:]]*iptables -P FORWARD ACCEPT[[:space:]]*$/d' "${file}"
-
-      # Insert only after the daemon is confirmed up.
-      sed -i "/${match}/i\\${SYNO_DOCKER_SCRIPT_FORWARDING}" "${file}"
-      echo "Added IP forwarding configuration to ${file} (post daemon start)."
-    else
-      echo "WARNING: anchor '\$DockerUpdaterBin postdaemonup' not found in ${file}."
-      echo "         File left unmodified -- check the file manually."
+    validate_forwarding_anchor
+    script_temp=$(mktemp "${file}.XXXXXX") || terminate "Could not create temporary Docker startup script"
+    if ! cp -p "$file" "$script_temp"; then
+      rm -f "$script_temp"
+      terminate "Could not copy Docker startup script"
     fi
+    # Remove any previously-inserted forwarding block, wherever it landed. Older versions of this script (and
+    # fix_ipforward.sh / switch_forward.sh) inserted it before 'start_docker_daemon'. Only the iptables FORWARD lines
+    # (and the comment directly above them) are removed; the identically-commented insmod block added by
+    # install_iptables_modules.sh is left untouched.
+    if ! sed -i '/^[[:space:]]*iptables -C FORWARD -j DOCKER-FORWARD/d' "$script_temp" ||
+      ! sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "$script_temp" ||
+      ! sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -P FORWARD ACCEPT/d}' "$script_temp" ||
+      ! sed -i '/^[[:space:]]*iptables -P FORWARD ACCEPT[[:space:]]*$/d' "$script_temp" ||
+      ! sed -i "/${match}/i\\${SYNO_DOCKER_SCRIPT_FORWARDING}" "$script_temp" ||
+      ! grep -q 'iptables -C FORWARD -j DOCKER-FORWARD' "$script_temp"; then
+      rm -f "$script_temp"
+      terminate "Could not update Docker startup script"
+    fi
+
+    # Insert only after the daemon is confirmed up.
+    if ! mv "$script_temp" "$file"; then
+      rm -f "$script_temp"
+      terminate "Could not replace Docker startup script"
+    fi
+    echo "Added IP forwarding configuration to ${file} (post daemon start)."
   else
     echo "Skipping configuration in STAGE mode"
   fi
@@ -1034,8 +1152,8 @@ execute_update_script() {
 #======================================================================================================================
 execute_restore_log() {
   print_status "Restoring log driver"
-  if [ "${stage}" = 'false' ] && [ "${skip_driver_update}" = 'false' ] ; then
-    cp "${temp_dir}"/dockerd.json "${SYNO_DOCKER_JSON}"
+  if [[ "${stage}" = 'false' ]] && [[ "${skip_driver_update}" = 'false' ]] ; then
+    cp "${temp_dir}"/dockerd.json "${SYNO_DOCKER_JSON}" || terminate "Could not restore Docker daemon configuration"
   else
     echo "Skipping restoring in STAGE mode or TARGET mode"
   fi
@@ -1052,10 +1170,18 @@ execute_restore_log() {
 #======================================================================================================================
 execute_restore_script() {
   print_status "Restoring start-stop-status script"
-  if [ "${stage}" = 'false' ] ; then
-    cp "${temp_dir}"/start-stop-status "${SYNO_DOCKER_SCRIPT}"
-    if [ -f "${SCRIPT_DIR}/install_apparmor_profile.sh" ]; then
-      bash "${SCRIPT_DIR}/install_apparmor_profile.sh" --restore
+  if [[ "${stage}" = 'false' ]] && [[ "${skip_docker_update}" = 'false' ]]; then
+    cp "${temp_dir}"/start-stop-status "${SYNO_DOCKER_SCRIPT}" || terminate "Could not restore Docker start-stop-status script"
+    if [[ -f "${SCRIPT_DIR}/install_apparmor_profile.sh" ]]; then
+      if [[ -f "${temp_dir}/docker-default.profile.synology-docker-managed" ]]; then
+        cp -p "${temp_dir}/docker-default.profile" "${SYNO_DOCKER_JSON_PATH}/docker-default.profile" || terminate "Could not restore managed AppArmor profile"
+        cp -p "${temp_dir}/docker-default.profile.synology-docker-managed" "${SYNO_DOCKER_JSON_PATH}/docker-default.profile.synology-docker-managed" || terminate "Could not restore AppArmor ownership marker"
+        bash "${SCRIPT_DIR}/install_apparmor_profile.sh" || terminate "Could not activate restored AppArmor profile"
+      elif grep -q 'docker-default.profile' "${SYNO_DOCKER_SCRIPT}"; then
+        bash "${SCRIPT_DIR}/install_apparmor_profile.sh" || terminate "Could not activate legacy AppArmor profile"
+      else
+        bash "${SCRIPT_DIR}/install_apparmor_profile.sh" --restore || terminate "Could not restore AppArmor configuration"
+      fi
     fi
   else
     echo "Skipping restoring in STAGE mode or TARGET mode"
@@ -1075,19 +1201,15 @@ execute_start_syno() {
   print_status "Starting Docker service - May take a while. "
   echo "   - timeout set to ${SYNO_SERVICE_START_TIMEOUT} based on ${RUNNING_CONTAINERS} active containers"
 
-  if [ "${stage}" = 'false' ] ; then
+  if [[ "${stage}" = 'false' ]] ; then
     case "${dsm_major_version}" in
       "6")
         synoservicectl_bin=$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")
         timeout --foreground "${SYNO_SERVICE_START_TIMEOUT}" "${synoservicectl_bin}" --start "${SYNO_DOCKER_SERV_NAME}"
 
         syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep running -o)
-        if [ "${syno_status}" != 'running' ] ; then
-          if [ "${force}" != 'true' ] ; then
-            terminate "Could not bring Docker Engine back online"
-          else
-            echo "ERROR: Could not bring Docker Engine back online"
-          fi
+        if [[ "${syno_status}" != 'running' ]]; then
+          terminate "Could not bring Docker Engine back online"
         fi
         ;;
       "7")
@@ -1095,17 +1217,15 @@ execute_start_syno() {
         timeout --foreground "${SYNO_SERVICE_START_TIMEOUT}" "${synopkg_bin}" start "${SYNO_DOCKER_SERV_NAME}"
 
         syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep started -o)
-        if [ "${syno_status}" != 'started' ] ; then
-          if [ "${force}" != 'true' ] ; then
-            terminate "Could not bring Docker Engine back online"
-          else
-            echo "ERROR: Could not bring Docker Engine back online"
-          fi
+        if [[ "${syno_status}" != 'started' ]]; then
+          terminate "Could not bring Docker Engine back online"
         fi
         ;;
       *)
-        echo "ERROR: Cannot start Docker package, unsupported DSM version: ${dsm_major_version}"
+        terminate "Cannot start Docker package on unsupported DSM version: ${dsm_major_version}"
+        ;;
     esac
+    service_stopped='false'
   else
     echo "Skipping Docker service control in STAGE mode"
   fi
@@ -1120,6 +1240,10 @@ execute_start_syno() {
 #   modules installed, start script modified (if necessary)
 #======================================================================================================================
 install_modules() {
+  if [[ "${stage}" = 'true' ]]; then
+    echo "Skipping module installation in STAGE mode"
+    return
+  fi
   print_status "Checking for / Installing iptables modules."
   if [[ "${install_iptables_modules}" == 'true' ]]; then
   echo "   Based on this version of docker, we'll need to check for / install iptables modules..."
@@ -1136,6 +1260,10 @@ install_modules() {
 #   wrapper installed, profile installed and loaded, start script modified (if necessary)
 #======================================================================================================================
 install_apparmor_profile() {
+  if [[ "${stage}" = 'true' ]]; then
+    echo "Skipping AppArmor profile installation in STAGE mode"
+    return
+  fi
   if [[ "${install_apparmor}" == 'true' ]]; then
     print_status "Installing AppArmor parser wrapper and docker-default profile."
     bash "${SCRIPT_DIR}/install_apparmor_profile.sh" || terminate "Could not install AppArmor profile. Stopping."
@@ -1153,10 +1281,24 @@ install_apparmor_profile() {
 #   Removed temp folder.
 #======================================================================================================================
 execute_clean() {
-  if [ "$1" != 'silent' ] ; then
-    print_status "Cleaning the temp folder"
+  if [[ -n "$temp_dir" ]]; then
+    if [[ "$1" != 'silent' ]]; then
+      print_status "Cleaning the temp folder"
+    fi
+    rm -rf "$temp_dir" || terminate "Could not clean temporary files"
+    temp_dir=''
   fi
-  rm -rf "${temp_dir}"
+}
+
+cleanup_on_exit() {
+  local status=$?
+  if [[ "$status" -ne 0 ]] && [[ "$service_stopped" = 'true' ]]; then
+    printf 'Docker service may be stopped. Backup: %s/%s\n' "$backup_dir" "$docker_backup_filename" >&2
+  fi
+  if [[ "$preserve_stage" != 'true' ]] && [[ -n "$temp_dir" ]]; then
+    rm -rf "$temp_dir" || { printf 'Could not clean temporary files: %s\n' "$temp_dir" >&2; status=1; }
+  fi
+  return "$status"
 }
 
 #======================================================================================================================
@@ -1164,8 +1306,8 @@ execute_clean() {
 #======================================================================================================================
 
 #======================================================================================================================
-# Entrypoint for the script. It initializes the environment variables, generates the DNS plugin configuration, and
-# runs the certbot to issue/renew the certificate.
+# Entrypoint for the script. It validates the environment and arguments, then runs the selected Docker update,
+# backup, download, restore, or validation workflow.
 #======================================================================================================================
 main() {
   # Show header
@@ -1174,31 +1316,35 @@ main() {
 
   # Test if script has root privileges, exit otherwise
   id=$(id -u)
-  if [ "${id}" -ne 0 ]; then
+  if [[ "${id}" -ne 0 ]]; then
     usage
     terminate "You need to be root to run this script"
   fi
+
+  trap 'cleanup_on_exit' EXIT
 
   # Validate dependencies
   validate_dependencies
 
   # Process and validate command-line arguments
-  while [ "$1" != "" ]; do
+  while [[ "${1:-}" != "" ]]; do
     case "$1" in
       -b | --backup )
         shift
-        docker_backup_filename="$1"
+        docker_backup_filename="${1:-}"
         backup_filename_flag='true'
         validate_backup_filename "Filename not provided"
         ;;
       -c | --compose )
         shift
-        target_compose_version="$1"
+        target_compose_version="${1:-}"
+        target_compose_explicit='true'
         validate_version_input "${target_compose_version}" "Unrecognized target Docker Compose version"
         ;;
       -d | --docker )
         shift
-        target_docker_version="$1"
+        target_docker_version="${1:-}"
+        target_docker_explicit='true'
         validate_version_input "${target_docker_version}" "Unrecognized target Docker version"
         ;;
       -f | --force )
@@ -1213,7 +1359,7 @@ main() {
         ;;
       -p | --path )
         shift
-        backup_dir="$1"
+        backup_dir="${1:-}"
         validate_provided_backup_path "Path not specified" "Path not found" \
           "Path is equal to temp directory, please specify a different path"
         ;;
@@ -1222,7 +1368,7 @@ main() {
         ;;
       -t | --target )
         shift
-        target="$1"
+        target="${1:-}"
         validate_target "Invalid target"
         ;;
       backup | restore | update | logger | validate | only_script )
@@ -1231,7 +1377,7 @@ main() {
       download | install )
         command="$1"
         shift
-        download_dir="$1"
+        download_dir="${1:-}"
         validate_provided_download_path "Path not specified" "Path not found"
         ;;
       * )
@@ -1267,15 +1413,22 @@ main() {
       validate_syno_tools
       execute_prepare
       define_target_download
+      validate_offline_target
+      prepare_engine_requirements
+      validate_forwarding_anchor
       confirm_operation
       execute_backup
+      execute_extract_bin
       install_modules
       execute_stop_syno
-      execute_extract_bin
       execute_install_bin
       execute_update_log
       execute_update_script
+      install_apparmor_profile
       execute_start_syno
+      if [[ "$stage" = 'true' ]]; then
+        echo "Downloaded files remain at: $download_dir"
+      fi
       ;;
     restore )
       total_steps=6
@@ -1296,8 +1449,8 @@ main() {
       detect_current_versions
       validate_syno_tools
       execute_prepare
-      execute_stop_syno
       execute_backup
+      execute_stop_syno
       execute_update_log
       execute_start_syno
       ;;
@@ -1308,25 +1461,33 @@ main() {
       execute_prepare
       define_target_version
       define_update
+      prepare_engine_requirements
+      validate_forwarding_anchor
       confirm_operation
       execute_backup
-      install_modules
       execute_download_bin
       execute_download_compose
-      execute_stop_syno
       execute_extract_bin
+      install_modules
+      execute_stop_syno
       execute_install_bin
       execute_update_log
       execute_update_script
       install_apparmor_profile
       execute_start_syno
-      execute_clean
+      if [[ "$stage" = 'true' ]]; then
+        preserve_stage='true'
+        echo "Staged files: $download_dir"
+      else
+        execute_clean 'status'
+      fi
       ;;
     validate )
       total_steps=3
       detect_current_versions
       define_target_version
       define_update
+      prepare_engine_requirements
       ;;
     * )
       usage
@@ -1336,4 +1497,6 @@ main() {
   echo "Done."
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

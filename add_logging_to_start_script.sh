@@ -18,7 +18,7 @@ done
 
 # Test if script has root privileges, exit otherwise
 id=$(id -u)
-if [ "${id}" -ne 0 ]; then
+if [[ "${id}" -ne 0 ]]; then
     echo
     echo "You need to be root to run this script. Run again with:"
     echo
@@ -30,7 +30,7 @@ fi
 echo
 echo "Backing up original file..."
 echo
-if [ -f "./start-stop-status.bkup" ]; then
+if [[ -f "./start-stop-status.bkup" ]]; then
   echo "Your start-stop-status script is already backed up as ./start-stop-status.bkup"
   echo "...skipping backup"
 else
@@ -38,7 +38,7 @@ else
 fi
 echo
 
-if [ ! -f "./start-stop-status.bkup" ]; then
+if [[ ! -f "./start-stop-status.bkup" ]]; then
   echo
   echo "Problem backing up script. Stopping."
   exit

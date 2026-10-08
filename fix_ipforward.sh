@@ -2,7 +2,7 @@
 
 # Test if script has root privileges, exit otherwise
 id=$(id -u)
-if [ "${id}" -ne 0 ]; then
+if [[ "${id}" -ne 0 ]]; then
   echo "You need to run this with sudo or as root."
   exit 1
 fi

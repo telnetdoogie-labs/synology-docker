@@ -2,7 +2,7 @@
 
 # Test if script has root privileges, exit otherwise
 id=$(id -u)
-if [ "${id}" -ne 0 ]; then
+if [[ "${id}" -ne 0 ]]; then
   echo "You need to run this with sudo or as root."
   exit 1
 fi
@@ -43,7 +43,7 @@ sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*ip
 sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "${file}"
 sed -i '/^[[:space:]]*iptables -P FORWARD ACCEPT[[:space:]]*$/d' "${file}"
 
-if [ "${mode}" = "accept" ]; then
+if [[ "${mode}" = "accept" ]]; then
   echo "Found FORWARD ACCEPT policy in start-stop-status script..."
   echo "Switching to docker FORWARD rules"
   sed -i "/${match}/i\\${DOCKER_FORWARD}" "${file}"

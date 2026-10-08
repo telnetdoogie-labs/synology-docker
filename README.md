@@ -5,7 +5,7 @@
 >
 > Originally forked from [markdumay/synology-docker](https://github.com/markdumay/synology-docker)
 
-![Last Commit][synology-docker-last-commit] ![Issues][synology-docker-issues] ![Pull Requests][synology-docker-pulls] ![License][synology-docker-license]
+[![CI](https://github.com/telnetdoogie-labs/synology-docker/actions/workflows/ci.yml/badge.svg)](https://github.com/telnetdoogie-labs/synology-docker/actions/workflows/ci.yml) ![Last Commit][synology-docker-last-commit] ![Issues][synology-docker-issues] ![Pull Requests][synology-docker-pulls] ![License][synology-docker-license]
 
 ## Why this exists
 
@@ -70,6 +70,34 @@ git clone https://github.com/telnetdoogie-labs/synology-docker
 cd synology-docker
 ```
 
+## Guided recovery and update menu
+
+The easiest entry point is:
+
+```bash
+./syno_docker_recovery.sh
+```
+
+The menu starts with three workflows and shows the recommended order under each:
+
+1. **Upgrade Docker/Compose** — runtime check, inventory, backup, update, verification.
+2. **Downgrade or restore Docker/Compose** — runtime check, backup, restore/downgrade, verification.
+3. **Convert containers** — inventory, export, validation, recreation, manifest/status verification.
+
+Each workflow opens a submenu with only its relevant checks and actions. The menu does not delete a container, run an update, downgrade, or restore a backup without typed confirmation. Environment values remain in private `.env` files and are not shown.
+
+The same actions can be run non-interactively, for example:
+
+```bash
+./syno_docker_recovery.sh preflight 29
+./syno_docker_recovery.sh list
+./syno_docker_recovery.sh next /volume1/docker/recover
+./syno_docker_recovery.sh validate /volume1/docker/recover crashplan
+./syno_docker_recovery.sh manifest /volume1/docker/recover
+```
+
+`recreate`, `update`, and `restore` are deliberately available but require confirmation because they remove a container record, replace Docker binaries, or roll back configuration.
+
 ## 🚀 First‑time upgrade (do this once, carefully)
 
 > [!NOTE]
@@ -111,9 +139,43 @@ cd /volume1/docker/jellyfin
 docker-compose up -d --force-recreate
 ```
 
-Re‑run `syno_docker_list_containers.sh` until **everything** says `local`.
+For a non‑Compose container, generate a reviewed Compose file directly from `docker inspect`:
 
-> Containers created via `docker run` will show a _best‑guess_ recreate command. Verify it before running.
+```bash
+./syno_docker_list_containers.sh --compose-dir /volume1/docker/container-name container-name
+cd /volume1/docker/container-name
+sudo docker rm container-name
+sudo docker compose -f container-name.docker-compose.yml up -d --force-recreate
+```
+
+For a guided one-container-at-a-time recovery, use the container-data root and `--container-dirs --next`:
+
+```bash
+./syno_docker_list_containers.sh \
+  --compose-dir /volume1/docker \
+  --container-dirs \
+  --next
+```
+
+This selects the first container still using `db` and writes its files under `/volume1/docker/<name>/`. After reviewing the files, removing the old stopped container, and successfully recreating it, run the same command again to process the next `db` container. If the next pending container is already Compose-managed, the script prints its `docker compose up -d --force-recreate` command instead of generating another file.
+
+To convert every non‑Compose container into separate directories, omit `--next`:
+
+```bash
+./syno_docker_list_containers.sh \
+  --compose-dir /volume1/docker/recreated-containers \
+  --container-dirs
+```
+
+The script maintains a private JSON state file at `<compose-dir>/compose-export-manifest.json` (or the path supplied with `--manifest`). It records image names, logger values, output paths, and statuses such as `written`, `already-converted`, `candidate-generated`, `compose-managed`, and `updated`; it does not record environment values.
+
+The converter writes a private `<name>.env` file containing environment values and a `<name>.docker-compose.yml` file that forces the `local` logger. Anonymous Docker volumes with generated 64-character names are preserved as `external` volumes by default so no data is silently discarded. If review shows a volume such as `HASH:/storage:rw` is disposable, add `--fresh-anonymous-volumes`; the generated service then uses the anonymous mount `/storage:rw`, and the hash is omitted from the top-level `volumes:` block so Docker creates a fresh volume. Do not use that option when the anonymous volume might contain required data.
+
+On a repeat run, identical output is reported as `Already converted`. If an existing Compose file differs, it is not overwritten: the YAML diff is shown and the new candidate is saved as `<name>.docker-compose.yml.generated`; differing environment data is reported without printing values and saved as `<name>.env.generated`. Use `--force` only after reviewing those differences to replace the existing files. It also accepts a Synology Container Manager JSON export through `syno_container_export_to_compose.sh`; when using that format, pass `--volume-root /volumeN` if the NAS data is not under `/volume1`. Review mounts and ports before running. Removing the old stopped container does not remove its bind-mounted folders or named volumes.
+
+Re‑run `syno_docker_list_containers.sh` until **everything** says `local`. The listing includes stopped containers so `db`-logger failures remain visible.
+
+> Containers created via `docker run` will show a _best‑guess_ recreate command. Its environment values are deliberately hidden; replace the required `--env-file /REVIEW_AND_CREATE_ENV_FILE_BEFORE_RUNNING` with a reviewed, private environment file before use. Verify all remaining settings before running it.
 
 ### Step 3: Upgrade Docker & Compose
 
@@ -157,8 +219,47 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 | `--docker VERSION`  | Target Docker version     |
 | `--compose VERSION` | Target Compose version    |
 | `--backup NAME`     | Backup file name          |
-| `--force`           | Skip compatibility checks |
-| `--stage`           | Download only, no install |
+| `--force`           | Skip confirmation and compatibility checks; allow an explicitly requested downgrade |
+| `--stage`           | Download and extract without installing; print the retained staging path |
+
+## Testing
+
+Run the mocked regression tests in a disposable Docker container:
+
+```bash
+docker build -t synology-docker-tests -f tests/Dockerfile .
+docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests
+```
+
+The supported test scope is DSM major versions 6 and 7 only. These disposable tests cover version selection, stage/backup/restore failure paths, DSM 6/7 service failures, forwarding edits, verified module downloads, AppArmor rollback, and safe container-command rendering. They mock DSM; they do not modify a live Docker service or substitute for kernel and package tests on a NAS.
+
+### Validation status
+
+- **DSM 7:** live-tested on DSM 7.4.1 with Docker Engine 29.8.2 and Docker Compose 5.6.0, including kernel-module/AppArmor preparation and `db`-logger recovery workflows.
+- **DSM 6:** implemented and covered by mocked service-control tests, but **not yet validated on physical hardware**. Treat DSM 6 support as best-effort until a real DSM 6 NAS passes the runtime probe, update, workload, and rollback checks.
+
+Before running the updater on a NAS, check its runtime prerequisites with:
+
+```bash
+sh tests/check-dsm-runtime.sh 29
+```
+
+Replace `29` with the planned Docker Engine major version. The updater requires `/bin/bash`, `jq`, `curl`, `docker`, `realpath`, `readlink -f`, `mktemp -d`, `diff`, `date`, and GNU-compatible `timeout --foreground`, in addition to standard shell utilities. It also needs DSM's `synopkg` (DSM 7) or `synoservicectl` (DSM 6). For a Docker Engine 28+ target, the probe additionally checks `sha256sum`, `insmod`, `lsmod`, `iptables`, and `/bin/get_key_value`. Automatic module downloads are pinned to an upstream commit and checked against platform-specific SHA-256 hashes; new kernel/platform combinations need reviewed hashes or manually installed modules. `/bin/sh` may be a different shell; run scripts through their shebangs rather than invoking Bash scripts with `sh`. Semgrep and SonarQube are review tools for a development host or CI, not runtime dependencies on the NAS.
+
+The [virtual-dsm project](https://github.com/vdsm/virtual-dsm) can boot selected DSM 7 `.pat` releases, but requires a Linux KVM host; its README says Docker Desktop on macOS is unsupported. Its DSM 6 path has an [open D-Bus stability issue](https://github.com/vdsm/virtual-dsm/issues/1122), so validate DSM 6 on real hardware. The project further restricts use of Virtual DSM to official Synology hardware. Use actual NAS hardware for package, service-control, and kernel-module integration testing; keep every test to DSM 6 or DSM 7.
+
+### Manual integration matrix
+
+Run these checks only in a disposable, snapshot-backed environment with the Synology Docker package already installed:
+
+| DSM major | Suggested coverage | Environment |
+| ---------- | ------------------ | ----------- |
+| 6 | Latest DSM 6.2.4 update | Real Synology hardware |
+| 7 | DSM 7.1 and 7.2 | Real hardware or supported Virtual DSM/KVM host |
+
+For each environment, run `sh tests/check-dsm-runtime.sh 29` (using the planned Engine major), record `docker -v` and `docker-compose -v`, start a small representative workload, then run `sudo ./syno_docker_update.sh update`. Verify the service is started, both version commands succeed, and the workload is healthy. Test rollback separately with a named backup and verify the restored versions. Do not treat a successful Virtual DSM run as coverage of physical kernel-module or driver compatibility.
+
+An update stops rather than silently downgrading if release detection fails or an automatic target is older than the installed version. To deliberately downgrade during `update`, specify `--docker VERSION` or `--compose VERSION` together with `--force`; an older offline Docker archive passed to `install PATH` also requires `--force`. Required module and AppArmor preparation is still performed. Backups are private and are never overwritten. `--stage update` leaves downloads in the printed private directory so they can be inspected or passed to `install PATH`. If a change fails after the service has stopped, the script reports the backup path and exits nonzero; it does not automatically restart mixed binaries. Diagnose the failure and restore the backup with `sudo ./syno_docker_update.sh --backup /path/to/backup.tgz restore` before retrying.
 
 ## Contributing
 

@@ -75,6 +75,7 @@ readonly SYNO_DOCKER_SCRIPT_FORWARDING="            # Added by docker update\n  
 readonly SYNO_SERVICE_STOP_TIMEOUT='10m'
 readonly SYNO_STATUS_POLL_INTERVAL=5
 readonly SYNOPKG_BIN='/usr/syno/bin/synopkg'
+readonly FUSE_OVERLAYFS_RC_SCRIPT='/usr/local/etc/rc.d/containerd-fuse-overlayfs.sh'
 readonly SYNOSERVICECTL_BIN='/usr/syno/sbin/synoservicectl'
 if ! RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | awk 'NF' | wc -l); then
   RUNNING_CONTAINERS=0
@@ -116,6 +117,7 @@ install_iptables_modules='false'
 skip_iptables_modules='false'
 install_apparmor='false'
 refresh_runc='false'
+install_fuse='false'
 
 
 #======================================================================================================================
@@ -142,6 +144,7 @@ usage() {
   echo "  -s, --stage            Stage only, do not actually replace binaries or configuration of log driver"
   echo "  -t, --target           Target to update, either 'all' (default), 'engine', 'compose', or 'driver'"
   echo "  --skip-iptables        Do not check for / install iptables modules"
+  echo "  --fuse-overlayfs       Switch Docker to fuse-overlayfs storage (only for 'aufs' setups without overlay support)"
 
   echo
   echo "Commands:"
@@ -153,7 +156,8 @@ usage() {
   echo "  stop                   Stop the Docker package, waiting for it to finish (or report why it didn't)"
   echo "  update                 Update Docker and Docker Compose to target version (creates backup first)"
   echo "  logger                 Update ONLY the logging driver to the local logger (a proactive preparation step)"
-  echo "  only_script            Update ONLY the start-stop-status IP forwarding block (no binaries, no restart)"
+  echo "  only_script            Update ONLY the start-stop-status IP forwarding block and how the iptables modules"
+  echo "                         are loaded (no binaries, no restart). Run it after a Container Manager package update"
   echo "  validate               Validates versions available for update"
   echo
 }
@@ -596,6 +600,8 @@ define_update() {
       skip_driver_update='true'  # the log driver step still runs (and reports it's skipping)
     fi
   fi
+
+  define_storage_driver
 }
 
 #======================================================================================================================
@@ -668,6 +674,47 @@ define_target_download() {
   [ "${skip_docker_update}" = 'false' ] && echo "Target Docker version: ${target_docker_version:-Unknown}"
   [ "${skip_compose_update}" = 'false' ] && echo "Target Docker Compose version: Unknown"
   validate_downloaded_versions
+  define_storage_driver
+}
+
+#======================================================================================================================
+# Checks the storage driver will work with the target Docker version. Docker 24+ dropped 'aufs' (Synology's own
+# Docker build keeps it), so on 'aufs' setups without overlay support the upgrade would leave Docker unable to start;
+# fuse-overlayfs is the way forward there, and is only ever set up when asked for with --fuse-overlayfs.
+#======================================================================================================================
+# Globals:
+#   - force
+#   - install_fuse
+#   - skip_docker_update
+#   - target_docker_version
+#   - total_steps
+# Outputs:
+#   Updated 'total_steps', a warning, or termination if the target version can't use the current storage driver.
+#======================================================================================================================
+define_storage_driver() {
+  if [ "${install_fuse}" = 'true' ] ; then
+    total_steps=$((total_steps+1))
+    return
+  fi
+
+  # Only relevant when the Docker engine itself is being replaced with a version that has dropped aufs
+  target_major="${target_docker_version%%.*}"
+  if [ "${skip_docker_update}" = 'true' ] || ! [ "${target_major}" -ge 24 ] 2>/dev/null ; then
+    return
+  fi
+  storage_driver=$(jq -r '.["storage-driver"] // empty' "${SYNO_DOCKER_JSON}" 2>/dev/null)
+  if [ "${storage_driver}" != 'aufs' ] ; then
+    return
+  fi
+  if grep -qw overlay /proc/filesystems 2>/dev/null || modprobe -n overlay 2>/dev/null ; then
+    advice="This kernel supports overlay: set \"storage-driver\" to \"overlay2\" in ${SYNO_DOCKER_JSON} (images will need pulling again), or stay on a version below 24."
+  else
+    advice="This kernel has no overlay support: re-run with --fuse-overlayfs to switch to fuse-overlayfs (see the README), or stay on a version below 24."
+  fi
+  if [ "${force}" != 'true' ] ; then
+    terminate "Docker ${target_docker_version} can't use the 'aufs' storage driver set in dockerd.json, so it would not start after the update. ${advice}"
+  fi
+  echo "WARNING: Docker ${target_docker_version} can't use the 'aufs' storage driver; continuing because of --force. ${advice}"
 }
 
 #======================================================================================================================
@@ -1205,6 +1252,8 @@ execute_update_script() {
     # File to edit
     file="${SYNO_DOCKER_SCRIPT}"
 
+    remove_legacy_module_lines "${file}"
+
     # Verify the insertion anchor exists before touching the file, so a missing anchor leaves
     # the file unmodified.
     match="^[[:space:]]*[$]DockerUpdaterBin postdaemonup[[:space:]]*$"
@@ -1356,6 +1405,78 @@ install_apparmor_profile() {
 }
 
 #======================================================================================================================
+# Removes the insmod lines that older versions of install_iptables_modules.sh inserted into start-stop-status, once
+# the systemd drop-in loads the modules instead. Runs on every start-stop-status update (including forced and
+# same-version updates, and after a legacy version of the script added them again), and only when the drop-in exists.
+#======================================================================================================================
+# Arguments:
+#   $1 - start-stop-status file
+#======================================================================================================================
+remove_legacy_module_lines() {
+  local file="$1" unit
+  unit=$(sed -n 's/^Dockerd="\(.*\)"[[:space:]]*$/\1/p' "${file}" | head -1)
+  if [ -z "${unit}" ] || [ ! -f "/etc/systemd/system/${unit}.service.d/iptables-raw-modules.conf" ] || \
+    ! grep -q 'Load raw modules' "${file}"; then
+    return
+  fi
+  sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*# Load raw modules[[:space:]]*$/d}' "${file}"
+  sed -i '/^[[:space:]]*# Load raw modules[[:space:]]*$/d' "${file}"
+  sed -i '/^[[:space:]]*insmod \/lib\/modules\/ip6\{0,1\}table_raw\.ko[[:space:]]*$/d' "${file}"
+  echo "Removed the old module loading lines from ${file} (the systemd drop-in loads the modules now)."
+}
+
+#======================================================================================================================
+# Re-checks how the iptables raw modules are loaded on hosts that already have them installed (Docker 28+), outside a
+# full update: on DSM 7 this moves module loading from start-stop-status to a systemd drop-in, and restores it if a
+# Container Manager package update removed it. Skipped with --skip-iptables or when the modules were never installed.
+#======================================================================================================================
+# Globals:
+#   - skip_iptables_modules
+#   - stage
+#======================================================================================================================
+migrate_module_loading() {
+  if [ "${skip_iptables_modules}" = 'true' ] || [ "${stage}" = 'true' ] || \
+    { [ ! -f /lib/modules/iptable_raw.ko ] && [ ! -f /lib/modules/ip6table_raw.ko ] ; } ; then
+    return
+  fi
+  echo "Checking how the iptables raw modules are loaded..."
+  "${SCRIPT_DIR}/install_iptables_modules.sh" || echo "WARNING: could not update how the iptables modules are loaded"
+}
+
+#======================================================================================================================
+# Sets up fuse-overlayfs storage when asked for with --fuse-overlayfs (see install_fuse_overlayfs.sh). Runs before
+# Docker is stopped, so a declined or failed setup leaves Docker untouched.
+#======================================================================================================================
+# Globals:
+#   - force
+#   - install_fuse
+#   - stage
+#======================================================================================================================
+setup_fuse_overlayfs() {
+  if [ "${install_fuse}" != 'true' ] ; then
+    return
+  fi
+  print_status "Setting up fuse-overlayfs storage"
+  if [ "${stage}" = 'true' ] ; then
+    echo "Skipping fuse-overlayfs setup in STAGE mode"
+    return
+  fi
+  fuse_args=''
+  [ "${force}" = 'true' ] && fuse_args='--yes'
+  # shellcheck disable=SC2086
+  "${SCRIPT_DIR}/install_fuse_overlayfs.sh" ${fuse_args} || \
+    terminate "fuse-overlayfs was not set up, so the update was stopped. Docker has not been changed."
+
+  # dockerd will depend on the snapshotter and the separate containerd (normally started at boot by the rc.d script).
+  # They use their own sockets, so they can start now alongside the running Docker, which reads its new configuration
+  # when it's restarted later in the update.
+  if [ -x "${FUSE_OVERLAYFS_RC_SCRIPT}" ] ; then
+    echo "   - starting fuse-overlayfs services"
+    "${FUSE_OVERLAYFS_RC_SCRIPT}" start
+  fi
+}
+
+#======================================================================================================================
 # Removes the temp folder.
 #======================================================================================================================
 # Globals:
@@ -1420,6 +1541,9 @@ main() {
       --skip-iptables )
         skip_iptables_modules='true'
         ;;
+      --fuse-overlayfs )
+        install_fuse='true'
+        ;;
       -h | --help )
         usage
         exit
@@ -1459,6 +1583,7 @@ main() {
     only_script )
       total_steps=1
       execute_update_script
+      migrate_module_loading
       ;;
     backup )
       total_steps=1
@@ -1484,6 +1609,7 @@ main() {
       confirm_operation
       execute_backup
       install_modules
+      setup_fuse_overlayfs
       execute_stop_syno
       execute_extract_bin
       execute_install_bin
@@ -1538,6 +1664,7 @@ main() {
       confirm_operation
       execute_backup
       install_modules
+      setup_fuse_overlayfs
       execute_download_bin
       execute_download_compose
       execute_stop_syno

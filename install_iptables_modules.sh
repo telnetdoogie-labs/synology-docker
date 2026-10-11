@@ -20,6 +20,16 @@ else
     exit 1
 fi
 INSERTAFTER='iptablestool --insmod "${DockerServName}" ${InsertModules}'
+# On DSM 7, dockerd runs as a systemd unit. Loading the modules from a drop-in for that unit survives Container
+# Manager package updates, which replace start-stop-status (and with it the older inserted insmod lines).
+DOCKERD_UNIT=$(sed -n 's/^Dockerd="\(.*\)"[[:space:]]*$/\1/p' "${FILE}" | head -1)
+if [ -n "${DOCKERD_UNIT}" ] && [ -d /run/systemd/system ]; then
+  USE_SYSTEMD='true'
+  DROPIN_DIR="/etc/systemd/system/${DOCKERD_UNIT}.service.d"
+  DROPIN="${DROPIN_DIR}/iptables-raw-modules.conf"
+else
+  USE_SYSTEMD='false'
+fi
 INSERT="    # Added by docker update\n"
 INSERT="${INSERT}   # Load raw modules\n"
 INSERT="${INSERT}   insmod ${MODULES_FOLDER}/${IP4MODULE}\n"
@@ -87,6 +97,15 @@ modules_available_for_download() {
 }
 
 start_script_loads_modules() {
+  if [[ "${USE_SYSTEMD}" == "true" ]]; then
+    # the systemd drop-in loads the modules before dockerd starts
+    if [ -f "${DROPIN}" ]; then
+      echo "true"
+      return 0
+    fi
+    echo "false"
+    return 1
+  fi
   if ! grep -q 'Load raw modules' "${FILE}"; then
     # the script does not currently load the modules
     echo "false"
@@ -115,7 +134,7 @@ check_all() {
   output_result $MOD_DL_AVAIL
 
   echo
-  echo -n " - CM script loads modules ?"
+  echo -n " - modules load with Docker?"
   SCRIPT_ADDED=$(start_script_loads_modules)
   output_result $SCRIPT_ADDED
   echo
@@ -142,9 +161,37 @@ install_and_validate_modules() {
 }
 
 modify_script() {
+  if [[ "${USE_SYSTEMD}" == "true" ]]; then
+    install_dropin
+    return
+  fi
   echo "Modifying the ContainerManager startup to install modules..."
   match="^[[:space:]]*${INSERTAFTER}"
   sed -i "/$match/a\\$INSERT" "${FILE}"
+}
+
+install_dropin() {
+  echo "Adding a systemd drop-in to load the modules before ${DOCKERD_UNIT} starts..."
+  mkdir -p "${DROPIN_DIR}"
+  {
+    echo "# Added by synology-docker (install_iptables_modules.sh): load the iptables raw modules Docker 28+ needs"
+    echo "[Service]"
+    echo "ExecStartPre=-/bin/sh -c 'lsmod | grep -q \"^iptable_raw \" || insmod ${MODULES_FOLDER}/${IP4MODULE}'"
+    echo "ExecStartPre=-/bin/sh -c 'lsmod | grep -q \"^ip6table_raw \" || insmod ${MODULES_FOLDER}/${IP6MODULE}'"
+  } > "${DROPIN}"
+  systemctl daemon-reload
+}
+
+# Older versions of this script inserted the insmod lines into start-stop-status. With the drop-in in place they're
+# no longer needed, so remove them (the identically-commented IP forwarding block is left alone).
+remove_script_insert() {
+  if ! grep -q 'Load raw modules' "${FILE}"; then
+    return
+  fi
+  echo "Removing the old module loading lines from ${FILE}..."
+  sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*# Load raw modules[[:space:]]*$/d}' "${FILE}"
+  sed -i '/^[[:space:]]*# Load raw modules[[:space:]]*$/d' "${FILE}"
+  sed -i '/^[[:space:]]*insmod \/lib\/modules\/ip6\{0,1\}table_raw\.ko[[:space:]]*$/d' "${FILE}"
 }
 
 
@@ -202,6 +249,10 @@ if [[ $SCRIPT_ADDED != "true" ]]; then
     echo "   We cannot continue"
     exit 1
   fi
+fi
+
+if [[ "${USE_SYSTEMD}" == "true" ]]; then
+  remove_script_insert
 fi
 
 check_all

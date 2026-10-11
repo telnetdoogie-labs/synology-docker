@@ -73,6 +73,7 @@ readonly SYNO_DOCKER_JSON_PATH="${SYNO_DOCKER_DIR}/etc"
 readonly SYNO_DOCKER_JSON="${SYNO_DOCKER_JSON_PATH}/dockerd.json"
 readonly SYNO_DOCKER_SCRIPT_FORWARDING="            # Added by docker update\n          iptables -P FORWARD ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD"
 readonly SYNO_SERVICE_STOP_TIMEOUT='10m'
+readonly SYNO_STATUS_POLL_INTERVAL=5
 readonly SYNOPKG_BIN='/usr/syno/bin/synopkg'
 readonly SYNOSERVICECTL_BIN='/usr/syno/sbin/synoservicectl'
 if ! RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | awk 'NF' | wc -l); then
@@ -147,7 +148,9 @@ usage() {
   echo "  backup                 Create a backup of Docker and Docker Compose binaries and dockerd configuration"
   echo "  download [PATH]        Download Docker and Docker Compose binaries to PATH"
   echo "  install [PATH]         Update Docker and Docker Compose from files on PATH"
-  echo "  restore                Restore Docker and Docker Compose from backup"
+  echo "  restore                Restore Docker and Docker Compose from backup (works with the package stopped)"
+  echo "  start                  Start the Docker package and report why if it doesn't come up"
+  echo "  stop                   Stop the Docker package, waiting for it to finish (or report why it didn't)"
   echo "  update                 Update Docker and Docker Compose to target version (creates backup first)"
   echo "  logger                 Update ONLY the logging driver to the local logger (a proactive preparation step)"
   echo "  only_script            Update ONLY the start-stop-status IP forwarding block (no binaries, no restart)"
@@ -211,8 +214,8 @@ detect_current_versions() {
     compose_version=$(docker-compose -v 2>/dev/null | grep -Eo "[0-9]*.[0-9]*.[0-9]*," | cut -d',' -f 1)
   fi
 
-  containerd_version=$(containerd -version | grep -Eo "v[0-9]+.[0-9]+.[0-9]+" | cut -c 2-)
-  runc_version=$(runc -version | grep -Eo "v[0-9]+.[0-9]+.[0-9]+" | cut -c 2-)
+  containerd_version=$(containerd -version 2>/dev/null | grep -Eo "v[0-9]+.[0-9]+.[0-9]+" | cut -c 2-)
+  runc_version=$(runc -version 2>/dev/null | grep -Eo "v[0-9]+.[0-9]+.[0-9]+" | cut -c 2-)
 
   echo "Current DSM version: ${dsm_version:-Unknown}"
   echo "Current Docker version: ${docker_version:-Unknown}"
@@ -247,6 +250,22 @@ validate_current_version() {
   # Test if host is DSM 6 or later, exit otherwise
   if [ "${dsm_major_version}" -lt "${DSM_SUPPORTED_VERSION}" ] ; then
     terminate "This script supports DSM 6.x or later only, use --force to override"
+  fi
+
+  # Restoring and controlling the service don't depend on the current versions, and are needed most when Docker is
+  # stopped or broken
+  case "${command}" in
+    restore | start | stop ) return ;;
+  esac
+
+  # DSM removes the Docker binaries from PATH while the package is stopped, so versions can't be detected. Starting
+  # it is the fix (this script stops it again itself); --force would skip the checks instead.
+  if { [ -z "${docker_version}" ] && [ "${skip_docker_update}" = 'false' ] ; } || \
+    { [ -z "${compose_version}" ] && [ "${skip_compose_update}" = 'false' ] ; } ; then
+    syno_status=$(get_syno_status)
+    if [ "${syno_status}" != 'started' ] ; then
+      terminate "${SYNO_DOCKER_SERV_NAME} is not running (status: ${syno_status}), so the current Docker version can't be detected. Start it first with '$(syno_start_cmd)', then re-run this script"
+    fi
   fi
 
   # Test Docker version is present, exit otherwise
@@ -733,6 +752,138 @@ execute_prepare() {
 }
 
 #======================================================================================================================
+# Reports the state of the Docker package as one of 'started', 'stopped', 'stopping', 'starting' or 'unknown'.
+# 'synopkg status' (DSM 7) and 'synoservicectl --status' (DSM 6) print free text, so keywords are matched with the
+# transitional states first ('stopping' must not be read as 'stopped').
+#======================================================================================================================
+# Outputs:
+#   Writes the normalized state to stdout.
+#======================================================================================================================
+get_syno_status() {
+  local raw
+  raw=$(get_syno_status_raw)
+  case "${raw}" in
+    *stopping*) echo 'stopping' ;;
+    *starting*) echo 'starting' ;;
+    *started*|*running*) echo 'started' ;;
+    *stopped*|*stop*) echo 'stopped' ;;
+    *) echo 'unknown' ;;
+  esac
+}
+
+#======================================================================================================================
+# Prints the raw package status as reported by Synology's package tool, for diagnostics.
+#======================================================================================================================
+get_syno_status_raw() {
+  case "${dsm_major_version}" in
+    "6") "$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")" --status "${SYNO_DOCKER_SERV_NAME}" 2>&1 ;;
+    *)   "$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")" status "${SYNO_DOCKER_SERV_NAME}" 2>&1 ;;
+  esac
+}
+
+#======================================================================================================================
+# Runs a start or stop of the Docker package with the matching timeout.
+#======================================================================================================================
+# Arguments:
+#   $1 - 'start' or 'stop'
+# Outputs:
+#   Returns the exit code of the package tool, or 124 if the timeout was reached.
+#======================================================================================================================
+syno_ctl() {
+  local action="$1" limit="${SYNO_SERVICE_STOP_TIMEOUT}"
+  [ "${action}" = 'start' ] && limit="${SYNO_SERVICE_START_TIMEOUT}"
+  case "${dsm_major_version}" in
+    "6") timeout --foreground "${limit}" "$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")" \
+           "--${action}" "${SYNO_DOCKER_SERV_NAME}" ;;
+    *)   timeout --foreground "${limit}" "$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")" \
+           "${action}" "${SYNO_DOCKER_SERV_NAME}" ;;
+  esac
+}
+
+#======================================================================================================================
+# Print the commands a user can run to start the Docker package or check its status, for messages.
+#======================================================================================================================
+syno_start_cmd() {
+  if [ "${dsm_major_version}" = "6" ] ; then
+    echo "sudo synoservicectl --start ${SYNO_DOCKER_SERV_NAME}"
+  else
+    echo "sudo synopkg start ${SYNO_DOCKER_SERV_NAME}"
+  fi
+}
+
+syno_status_cmd() {
+  if [ "${dsm_major_version}" = "6" ] ; then
+    echo "sudo synoservicectl --status ${SYNO_DOCKER_SERV_NAME}"
+  else
+    echo "sudo synopkg status ${SYNO_DOCKER_SERV_NAME}"
+  fi
+}
+
+#======================================================================================================================
+# Prints the number of running containers, or 'an unknown number of' if the Docker CLI can't be reached.
+#======================================================================================================================
+count_running_containers() {
+  local ids
+  if ids=$(docker ps -q 2>/dev/null) ; then
+    echo "${ids}" | awk 'NF' | wc -l | tr -d ' '
+  else
+    echo 'an unknown number of'
+  fi
+}
+
+#======================================================================================================================
+# Returns success if a dockerd process is running.
+#======================================================================================================================
+dockerd_running() {
+  pidof dockerd >/dev/null 2>&1 || pgrep -x dockerd >/dev/null 2>&1
+}
+
+#======================================================================================================================
+# Waits until the Docker package reports 'stopped' and no dockerd process remains. Synology's own stop can give up
+# before our timeout and leave the package 'stopping' while a container is still shutting down, so keep waiting until
+# the overall stop timeout has passed.
+#======================================================================================================================
+# Arguments:
+#   $1 - Timeout, in 'timeout' notation (e.g. '10m', '30s')
+#   $2 - Epoch seconds the stop began (defaults to now)
+# Outputs:
+#   Returns 0 once stopped, 1 if the timeout is reached first.
+#======================================================================================================================
+wait_for_syno_stopped() {
+  local limit="$1" since="${2:-$(date +%s)}" seconds deadline
+  case "${limit}" in
+    *m) seconds=$(( ${limit%m} * 60 )) ;;
+    *s) seconds="${limit%s}" ;;
+    *)  seconds="${limit}" ;;
+  esac
+  deadline=$(( since + seconds ))
+  while true ; do
+    if [ "$(get_syno_status)" = 'stopped' ] && ! dockerd_running ; then
+      return 0
+    fi
+    if [ "$(date +%s)" -ge "${deadline}" ] ; then
+      return 1
+    fi
+    sleep "${SYNO_STATUS_POLL_INTERVAL}"
+  done
+}
+
+#======================================================================================================================
+# Prints the package status and where to look next, used when a stop or start does not complete.
+#======================================================================================================================
+print_syno_diagnostics() {
+  echo "   Package status: $(get_syno_status_raw | tr '\n' ' ')"
+  if dockerd_running ; then
+    echo "   dockerd process: still running"
+  else
+    echo "   dockerd process: not running"
+  fi
+  if [ "${dsm_major_version}" != "6" ] ; then
+    echo "   Docker daemon log: /var/log/systemd/pkg-${SYNO_DOCKER_SERV_NAME}-dockerd.service.log"
+  fi
+}
+
+#======================================================================================================================
 # Stops a running Docker daemon by invoking 'synoservicectl' or 'synopkg', unless 'stage' is set to true.
 #======================================================================================================================
 # Globals:
@@ -743,35 +894,41 @@ execute_prepare() {
 execute_stop_syno() {
   print_status "Stopping Docker service"
 
-  if [ "${stage}" = 'false' ] ; then
-    case "${dsm_major_version}" in
-      "6")
-        synoservicectl_bin=$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")
-        syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep running -o)
-        if [ "${syno_status}" = 'running' ] ; then
-          timeout --foreground "${SYNO_SERVICE_STOP_TIMEOUT}" "${synoservicectl_bin}" --stop "${SYNO_DOCKER_SERV_NAME}"
-          syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep stop -o)
-          if [ "${syno_status}" != 'stop' ] ; then
-            terminate "Could not stop Docker daemon"
-          fi
-        fi
-        ;;
-      "7")
-        synopkg_bin=$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")
-        syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep started -o)
-        if [ "${syno_status}" = 'started' ] ; then
-          timeout --foreground "${SYNO_SERVICE_STOP_TIMEOUT}" "${synopkg_bin}" stop "${SYNO_DOCKER_SERV_NAME}"
-          syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep stopped -o)
-          if [ "${syno_status}" != 'stopped' ] ; then
-            terminate "Could not stop Docker daemon"
-          fi
-        fi
-        ;;
-      *)
-        echo "ERROR: Cannot stop Docker package, unsupported DSM version: ${dsm_major_version}"
-    esac
-  else
+  if [ "${stage}" = 'true' ] ; then
     echo "Skipping Docker service control in STAGE mode"
+    return
+  fi
+
+  stop_started_at=$(date +%s)
+  syno_status=$(get_syno_status)
+  case "${syno_status}" in
+    started)
+      echo "   - stopping ${SYNO_DOCKER_SERV_NAME} ($(count_running_containers) running containers," \
+        "timeout ${SYNO_SERVICE_STOP_TIMEOUT})"
+      syno_ctl stop
+      ;;
+    stopped)
+      echo "   - ${SYNO_DOCKER_SERV_NAME} is already stopped, continuing"
+      ;;
+    *)
+      echo "   - ${SYNO_DOCKER_SERV_NAME} is '${syno_status}', waiting for it to finish stopping" \
+        "(timeout ${SYNO_SERVICE_STOP_TIMEOUT})"
+      ;;
+  esac
+
+  # Never replace binaries while the package is mid-transition or dockerd is still running
+  if ! wait_for_syno_stopped "${SYNO_SERVICE_STOP_TIMEOUT}" "${stop_started_at}" ; then
+    print_syno_diagnostics
+    echo "   ${SYNO_DOCKER_SERV_NAME} did not finish stopping within ${SYNO_SERVICE_STOP_TIMEOUT}" \
+      "($(count_running_containers) containers still running). The Docker binaries have not been replaced."
+    echo "   A container that ignores SIGTERM can hold up the stop. Check 'sudo docker ps', wait for the stop to"
+    echo "   complete (or stop the stuck container), confirm '$(syno_status_cmd)' shows it's"
+    echo "   stopped, then re-run this script. With many containers, stopping them first makes this much faster."
+    syno_status=$(get_syno_status)
+    if [ "${syno_status}" = 'stopped' ] && dockerd_running ; then
+      terminate "${SYNO_DOCKER_SERV_NAME} reports stopped, but dockerd is still running"
+    fi
+    terminate "Timed out stopping Docker (status: ${syno_status})"
   fi
 }
 
@@ -1105,39 +1262,44 @@ execute_start_syno() {
   print_status "Starting Docker service - May take a while. "
   echo "   - timeout set to ${SYNO_SERVICE_START_TIMEOUT} based on ${RUNNING_CONTAINERS} active containers"
 
-  if [ "${stage}" = 'false' ] ; then
-    case "${dsm_major_version}" in
-      "6")
-        synoservicectl_bin=$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")
-        timeout --foreground "${SYNO_SERVICE_START_TIMEOUT}" "${synoservicectl_bin}" --start "${SYNO_DOCKER_SERV_NAME}"
-
-        syno_status=$("${synoservicectl_bin}" --status "${SYNO_DOCKER_SERV_NAME}" | grep running -o)
-        if [ "${syno_status}" != 'running' ] ; then
-          if [ "${force}" != 'true' ] ; then
-            terminate "Could not bring Docker Engine back online"
-          else
-            echo "ERROR: Could not bring Docker Engine back online"
-          fi
-        fi
-        ;;
-      "7")
-        synopkg_bin=$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")
-        timeout --foreground "${SYNO_SERVICE_START_TIMEOUT}" "${synopkg_bin}" start "${SYNO_DOCKER_SERV_NAME}"
-
-        syno_status=$("${synopkg_bin}" status "${SYNO_DOCKER_SERV_NAME}" | grep started -o)
-        if [ "${syno_status}" != 'started' ] ; then
-          if [ "${force}" != 'true' ] ; then
-            terminate "Could not bring Docker Engine back online"
-          else
-            echo "ERROR: Could not bring Docker Engine back online"
-          fi
-        fi
-        ;;
-      *)
-        echo "ERROR: Cannot start Docker package, unsupported DSM version: ${dsm_major_version}"
-    esac
-  else
+  if [ "${stage}" = 'true' ] ; then
     echo "Skipping Docker service control in STAGE mode"
+    return
+  fi
+
+  syno_status=$(get_syno_status)
+  if [ "${syno_status}" = 'stopping' ] ; then
+    print_syno_diagnostics
+    fail_start "${SYNO_DOCKER_SERV_NAME} is still stopping, so it cannot be started yet. This is a problem with the" \
+      "stop, not the start: wait for it to finish (or stop the stuck container), then run" \
+      "'$(syno_start_cmd)'"
+    return
+  fi
+
+  syno_ctl start
+  rc=$?
+  syno_status=$(get_syno_status)
+  if [ "${syno_status}" != 'started' ] ; then
+    print_syno_diagnostics
+    if [ "${rc}" -eq 124 ] ; then
+      fail_start "Timed out after ${SYNO_SERVICE_START_TIMEOUT} starting Docker (status: ${syno_status})"
+    else
+      fail_start "Docker failed to start (status: ${syno_status})"
+    fi
+  fi
+}
+
+#======================================================================================================================
+# Reports a failed start: terminates, or only prints the error when the operation is forced.
+#======================================================================================================================
+# Arguments:
+#   $@ - Error message
+#======================================================================================================================
+fail_start() {
+  if [ "${force}" != 'true' ] ; then
+    terminate "$*"
+  else
+    echo "ERROR: $*"
   fi
 }
 
@@ -1255,7 +1417,7 @@ main() {
         target="$1"
         validate_target "Invalid target"
         ;;
-      backup | restore | update | logger | validate | only_script )
+      backup | restore | update | logger | validate | only_script | start | stop )
         command="$1"
         ;;
       download | install )
@@ -1320,6 +1482,18 @@ main() {
       execute_restore_log
       execute_restore_script
       execute_start_syno
+      ;;
+    start )
+      total_steps=1
+      detect_current_versions
+      validate_syno_tools
+      execute_start_syno
+      ;;
+    stop )
+      total_steps=1
+      detect_current_versions
+      validate_syno_tools
+      execute_stop_syno
       ;;
     logger )
       total_steps=4

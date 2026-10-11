@@ -133,6 +133,20 @@ git pull
 sudo ./syno_docker_update.sh update
 ```
 
+### Lots of containers?
+
+The update has to stop Container Manager, and Synology's stop can give up early if a container is slow to shut down (one container ignoring SIGTERM is enough). If you run a lot of containers, stop them yourself before updating; the script's stop step then has little left to do and finishes in seconds.
+
+If the stop does time out, the script stops before replacing anything and shows the package status. Wait for the stop to finish (or stop the stuck container), check `sudo synopkg status ContainerManager`, then run the update again.
+
+### Docker won't start after an update?
+
+`restore` works even when Container Manager is stopped or won't start, so you can roll back without reinstalling the package:
+
+```bash
+sudo ./syno_docker_update.sh restore --backup docker_backup_YYYYMMDD_HHMMSS.tgz
+```
+
 ## Usage
 
 ```bash
@@ -141,14 +155,16 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 
 ### Commands
 
-| Command         | Description                        |
-| --------------- | ---------------------------------- |
-| `backup`        | Backup Docker binaries & config    |
-| `download PATH` | Download Docker & Compose binaries |
-| `install PATH`  | Install from downloaded files      |
-| `restore`       | Restore from backup                |
-| `logger`        | Update logging driver only         |
-| `update`        | Full backup + update               |
+| Command         | Description                                                  |
+| --------------- | ------------------------------------------------------------ |
+| `backup`        | Backup Docker binaries & config                              |
+| `download PATH` | Download Docker & Compose binaries                           |
+| `install PATH`  | Install from downloaded files                                |
+| `restore`       | Restore from backup (works with Container Manager stopped)   |
+| `logger`        | Update logging driver only                                   |
+| `update`        | Full backup + update                                         |
+| `start`         | Start Container Manager, reporting why if it doesn't come up |
+| `stop`          | Stop Container Manager, waiting for it to finish             |
 
 ## Options
 

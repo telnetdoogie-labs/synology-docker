@@ -562,6 +562,12 @@ validate_target() {
 #   Terminates with non-zero exit code if both Docker and Docker Compose are already up to date, unless forced.
 #======================================================================================================================
 define_update() {
+  define_setup_steps
+
+  # Steps already ruled out by --target (the checks below only adjust for flags they set themselves)
+  [ "${skip_docker_update}" = 'true' ] && total_steps=$((total_steps-2))  # no Docker download or extract step
+  [ "${skip_compose_update}" = 'true' ] && total_steps=$((total_steps-1))  # no Compose download step
+
   if [ "${force}" != 'true' ] ; then
     # Docker 29.7.0+ bundles runc 1.4.3+, which works on DSM 5.x kernels. An older runc on such a target means a
     # previously pinned (or outdated) runc is still installed, so reinstall the Docker binaries to replace it.
@@ -575,19 +581,10 @@ define_update() {
       [ "${compose_version}" = "${target_compose_version}" ] && [ "${refresh_runc}" = 'false' ] ; then
       terminate_with_warning "Already on target version for Docker and Docker Compose"
     fi
-    major="${target_docker_version%%.*}"
-    if [[ "$major" -ge 28 && "${skip_iptables_modules}" = 'false' ]]; then
-      install_iptables_modules='true'
-      total_steps=$((total_steps+1))
-    fi
-    if [[ "$major" -ge 29 ]]; then
-      install_apparmor='true'
-      total_steps=$((total_steps+1))
-    fi
     if [ "${docker_version}" = "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] && \
       [ "${refresh_runc}" = 'false' ] ; then
       skip_docker_update='true'
-      total_steps=$((total_steps-1))
+      total_steps=$((total_steps-2))  # no Docker download or extract step
     fi
     if [ "${compose_version}" = "${target_compose_version}" ] && [ "${skip_compose_update}" = 'false' ]; then
       skip_compose_update='true'
@@ -596,9 +593,33 @@ define_update() {
 
     log_driver=$(jq -r '.["log-driver"] // empty' "${SYNO_DOCKER_JSON}")
     if [ "$log_driver" = "local" ]; then
-      skip_driver_update='true'
-      total_steps=$((total_steps-1))
+      skip_driver_update='true'  # the log driver step still runs (and reports it's skipping)
     fi
+  fi
+}
+
+#======================================================================================================================
+# Enables the setup steps the target Docker version depends on: iptables raw modules for v28+ (unless skipped) and the
+# AppArmor profile for v29+. These run whether or not the operation is forced; --force only bypasses the checks.
+#======================================================================================================================
+# Globals:
+#   - install_apparmor
+#   - install_iptables_modules
+#   - skip_iptables_modules
+#   - target_docker_version
+#   - total_steps
+# Outputs:
+#   Updated 'install_iptables_modules', 'install_apparmor' and 'total_steps'.
+#======================================================================================================================
+define_setup_steps() {
+  major="${target_docker_version%%.*}"
+  if [[ "$major" -ge 28 && "${skip_iptables_modules}" = 'false' ]]; then
+    install_iptables_modules='true'
+    total_steps=$((total_steps+1))
+  fi
+  if [[ "$major" -ge 29 ]]; then
+    install_apparmor='true'
+    total_steps=$((total_steps+1))
   fi
 }
 
@@ -1312,10 +1333,10 @@ fail_start() {
 #   modules installed, start script modified (if necessary)
 #======================================================================================================================
 install_modules() {
-  print_status "Checking for / Installing iptables modules."
   if [[ "${install_iptables_modules}" == 'true' ]]; then
-  echo "   Based on this version of docker, we'll need to check for / install iptables modules..."
-  "${SCRIPT_DIR}/install_iptables_modules.sh" || terminate "Could not install iptables modules. Stopping."
+    print_status "Checking for / Installing iptables modules."
+    echo "   Based on this version of docker, we'll need to check for / install iptables modules..."
+    "${SCRIPT_DIR}/install_iptables_modules.sh" || terminate "Could not install iptables modules. Stopping."
   fi
 }
 
@@ -1440,7 +1461,7 @@ main() {
       execute_update_script
       ;;
     backup )
-      total_steps=3
+      total_steps=1
       detect_current_versions
       execute_prepare
       execute_backup
@@ -1454,11 +1475,12 @@ main() {
       execute_download_compose
       ;;
     install )
-      total_steps=8
+      total_steps=7
       detect_current_versions
       validate_syno_tools
       execute_prepare
       define_target_download
+      define_setup_steps
       confirm_operation
       execute_backup
       install_modules
@@ -1467,6 +1489,7 @@ main() {
       execute_install_bin
       execute_update_log
       execute_update_script
+      install_apparmor_profile
       execute_start_syno
       ;;
     restore )
@@ -1506,7 +1529,7 @@ main() {
       execute_start_syno
       ;;
     update )
-      total_steps=12
+      total_steps=10
       detect_current_versions
       validate_syno_tools
       execute_prepare

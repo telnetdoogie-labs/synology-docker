@@ -212,18 +212,18 @@ case "$1" in
 
 		# install modules
 		iptablestool --insmod "${DockerServName}" ${InsertModules}
-		
+
 		logger -s -t Synology-Docker -p error "iptables modules added in start-stop-status"
         check_modules=`lsmod | grep iptable`
         logger -s -t Synology-Docker -p error "iptables modules post-iptablestool:"
         logger -s -t Synology-Docker -p error $check_modules
-		
+
 		$DockerUpdaterBin postinst updatedockerdconf "$(get_install_volume_type)"
 
 		$DockerUpdaterBin predaemonup
 		# start docker event watcherd
 		/usr/syno/bin/synosystemctl start "${DockerEventWatcherd}"
-		
+
         check_iptables=`iptables -L | grep "Chain FORWARD\|Chain DOCKER"`
         logger -s -t Synology-Docker -p error "FORWARD and DOCKER chains pre-FORWARD rule:"
         logger -s -t Synology-Docker -p error $check_iptables

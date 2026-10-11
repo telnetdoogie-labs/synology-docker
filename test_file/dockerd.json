@@ -3,7 +3,7 @@
   "group": "administrators",
   "log-driver": "db",
   "log-opts": {
-	"some-obsolete-setting": "1337"
+    "some-obsolete-setting": "1337"
   },
   "registry-mirrors": [],
   "storage-driver": "btrfs",
@@ -14,10 +14,9 @@
     }
   ],
   "runtimes": {
-	"nvidia": {
-		"path": "/usr/bin/nvidia-container-runtime",
-		"runtimeArgs": []
-	}
+    "nvidia": {
+      "path": "/usr/bin/nvidia-container-runtime",
+      "runtimeArgs": []
+    }
   }
 }
-

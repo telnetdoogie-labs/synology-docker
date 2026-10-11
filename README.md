@@ -169,14 +169,14 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 
 ## Options
 
-| Option              | Description               |
-| ------------------- | ------------------------- |
-| `--docker VERSION`  | Target Docker version     |
-| `--compose VERSION` | Target Compose version    |
-| `--backup NAME`     | Backup file name          |
-| `--force`           | Skip compatibility checks |
-| `--stage`           | Download only, no install |
-| `--skip-iptables`   | Don't check for / install iptables modules |
+| Option              | Description                                  |
+| ------------------- | -------------------------------------------- |
+| `--docker VERSION`  | Target Docker version                        |
+| `--compose VERSION` | Target Compose version                       |
+| `--backup NAME`     | Backup file name                             |
+| `--force`           | Skip compatibility checks                    |
+| `--stage`           | Download only, no install                    |
+| `--skip-iptables`   | Don't check for / install iptables modules   |
 | `--fuse-overlayfs`  | Switch storage to fuse-overlayfs (see below) |
 
 ## fuse-overlayfs (volumes on `aufs` without overlay support)

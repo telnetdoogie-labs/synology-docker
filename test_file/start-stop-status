@@ -205,13 +205,13 @@ case "$1" in
 
 		# install modules
 		iptablestool --insmod "${DockerServName}" ${InsertModules}
-		
+
 		$DockerUpdaterBin postinst updatedockerdconf "$(get_install_volume_type)"
 
 		$DockerUpdaterBin predaemonup
 		# start docker event watcherd
 		/usr/syno/bin/synosystemctl start "${DockerEventWatcherd}"
-		
+
 		# start docker
 		if ! start_docker_daemon; then
 			exit 1

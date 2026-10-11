@@ -16,7 +16,7 @@ body:
       description: |
         Steps to reproduce the behavior, e.g.:
         1. The invoked command: `./syno_docker_update.sh update`
-        2. Additional steps / commands...
+        2. Additional steps/commands...
     validations:
       required: true
   - type: textarea

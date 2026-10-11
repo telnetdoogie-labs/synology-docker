@@ -57,7 +57,8 @@ At a high level:
 2. Backs up your existing Docker install
 3. Stops Docker safely
 4. Replaces binaries & config
-5. Restarts Docker
+5. For Docker 28+, installs the `iptable_raw` / `ip6table_raw` kernel modules and loads them before Docker starts (a systemd drop-in on DSM 7, so it survives Container Manager updates). If you're already on the latest Docker, `sudo ./syno_docker_update.sh only_script` moves an older setup over to the drop-in
+6. Restarts Docker
 
 Everything is scripted. Nothing is magic. Rollbacks are built‑in.
 
@@ -175,6 +176,31 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 | `--backup NAME`     | Backup file name          |
 | `--force`           | Skip compatibility checks |
 | `--stage`           | Download only, no install |
+| `--skip-iptables`   | Don't check for / install iptables modules |
+| `--fuse-overlayfs`  | Switch storage to fuse-overlayfs (see below) |
+
+## fuse-overlayfs (volumes on `aufs` without overlay support)
+
+Most Synology setups use the `btrfs` storage driver and don't need this. It's for one case: Docker on the `aufs` storage driver (typically an ext4 volume) on a kernel without the `overlay` module, such as some models on kernel 4.4.x. Docker 24+ removed `aufs`, so there's no usable storage driver; the update script stops and tells you if you're in this situation.
+
+[fuse-overlayfs](https://github.com/containers/fuse-overlayfs) runs as a containerd proxy snapshotter over FUSE, which these kernels do support. It's opt-in:
+
+```bash
+sudo ./syno_docker_update.sh --fuse-overlayfs update
+```
+
+or on its own, followed by a restart of Container Manager (or a reboot):
+
+```bash
+sudo ./install_fuse_overlayfs.sh
+```
+
+Things to know before switching:
+
+- Images and containers from the old storage driver won't be visible afterwards. Pull images and recreate containers; volumes and bind mounts are kept.
+- It starts a separate containerd at boot (`/usr/local/etc/rc.d/containerd-fuse-overlayfs.sh`) and disables Synology's `updater` tool, which would otherwise switch the driver back to `aufs`.
+- The installer refuses to run on any driver other than `aufs`, and does nothing if your kernel supports overlay.
+- To undo it: `sudo ./install_fuse_overlayfs.sh --uninstall`, then restart Container Manager.
 
 ## Contributing
 
@@ -194,6 +220,7 @@ PRs are **VERY** welcome here. Many of the recent updates have been contributed 
 - Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
 - Awesome IP Forward rules fix and AppArmor update for v29+ by [@Salvora](https://github.com/Salvora)
 - AppArmor update / fix by [@Auddis](https://github.com/Auddis)
+- fuse-overlayfs support by [@doctorpangloss](https://github.com/doctorpangloss) ([AppMana](https://github.com/AppMana/forks-synology-docker))
 
 ## Special Thanks
 

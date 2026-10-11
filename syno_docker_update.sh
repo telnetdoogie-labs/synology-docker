@@ -52,7 +52,8 @@ readonly DEFAULT_COMPOSE_VERSION='2.1.1'
 readonly CPU_ARCH='x86_64'
 readonly DOWNLOAD_DOCKER="https://download.docker.com/linux/static/stable/${CPU_ARCH}"
 readonly DOWNLOAD_GITHUB='https://github.com/docker/compose'
-readonly PINNED_RUNC='https://github.com/opencontainers/runc/releases/download/v1.3.2/runc.amd64'
+readonly PINNED_RUNC_VERSION='1.4.3'
+readonly PINNED_RUNC="https://github.com/opencontainers/runc/releases/download/v${PINNED_RUNC_VERSION}/runc.amd64"
 readonly GITHUB_API_COMPOSE='https://api.github.com/repos/docker/compose/releases/latest'
 if [ -d "/var/packages/ContainerManager" ]; then
   readonly SYNO_DOCKER_DIR='/var/packages/ContainerManager'
@@ -113,6 +114,7 @@ total_steps=0
 install_iptables_modules='false'
 skip_iptables_modules='false'
 install_apparmor='false'
+refresh_runc='false'
 
 
 #======================================================================================================================
@@ -164,6 +166,20 @@ usage() {
 print_status() {
   step=$((step + 1))
   printf "${BOLD}%s${NC}\n" "Step ${step} from ${total_steps}: $1"
+}
+
+#======================================================================================================================
+# Compares two 'major.minor.revision' version strings.
+#======================================================================================================================
+# Arguments:
+#   $1 - Version to test
+#   $2 - Version to compare against
+# Outputs:
+#   Returns 0 if $1 is lower than $2, non-zero otherwise (including when either version is empty).
+#======================================================================================================================
+version_lt() {
+  [ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] && \
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -bt. -k1,1n -k2,2n -k3,3n | head -1)" = "$1" ]
 }
 
 #======================================================================================================================
@@ -528,8 +544,16 @@ validate_target() {
 #======================================================================================================================
 define_update() {
   if [ "${force}" != 'true' ] ; then
+    # Docker 29.7.0+ bundles runc 1.4.3+, which works on DSM 5.x kernels. An older runc on such a target means a
+    # previously pinned (or outdated) runc is still installed, so reinstall the Docker binaries to replace it.
     if [ "${docker_version}" = "${target_docker_version}" ] && \
-      [ "${compose_version}" = "${target_compose_version}" ] ; then
+      version_lt "${runc_version}" '1.4.1' && ! version_lt "${target_docker_version}" '29.7.0' ; then
+      refresh_runc='true'
+      echo "runc ${runc_version} is older than the version bundled with Docker ${target_docker_version}," \
+        "reinstalling Docker binaries to refresh runc"
+    fi
+    if [ "${docker_version}" = "${target_docker_version}" ] && \
+      [ "${compose_version}" = "${target_compose_version}" ] && [ "${refresh_runc}" = 'false' ] ; then
       terminate_with_warning "Already on target version for Docker and Docker Compose"
     fi
     major="${target_docker_version%%.*}"
@@ -541,7 +565,8 @@ define_update() {
       install_apparmor='true'
       total_steps=$((total_steps+1))
     fi
-    if [ "${docker_version}" = "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] ; then
+    if [ "${docker_version}" = "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] && \
+      [ "${refresh_runc}" = 'false' ] ; then
       skip_docker_update='true'
       total_steps=$((total_steps-1))
     fi
@@ -818,14 +843,19 @@ execute_extract_bin() {
       terminate "Files could not be extracted from archive"
     fi
 
-    # override runc binary on Kernels 5+ is present
-    if uname -r | grep -q '^5\.'; then
-      print_status "Detected Kernel v5, downloading / pinning runc version."
+    # runc 1.3.3-1.3.x and 1.4.0 fail on DSM 5.x kernels ("unsafe procfs detected ... proc/self/setgroups: no such
+    # file or directory"). Fixed upstream in runc 1.4.1 / 1.5.0, so only override the bundled runc when it's affected.
+    bundled_runc=$("${temp_dir}/docker/runc" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if uname -r | grep -q '^5\.' && echo "${bundled_runc}" | grep -Eq '^1\.(3\.([3-9]|[1-9][0-9])|4\.0)$'; then
+      echo "Bundled runc ${bundled_runc} is incompatible with Kernel v5, downloading / pinning runc ${PINNED_RUNC_VERSION}."
       response=$(curl -L "${PINNED_RUNC}" --write-out '%{http_code}' -o "${temp_dir}/docker/runc")
       if [ "${response}" != 200 ] ; then
         terminate "runc binary could not be downloaded"
       fi
       chmod +x "${temp_dir}/docker/runc"
+      echo "Target runc version: ${PINNED_RUNC_VERSION} (pinned, replaces bundled ${bundled_runc:-Unknown})"
+    else
+      echo "Target runc version: ${bundled_runc:-Unknown} (bundled)"
     fi
   fi
 }

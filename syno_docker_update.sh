@@ -1467,10 +1467,18 @@ execute_restore_log() {
 #======================================================================================================================
 execute_restore_script() {
   print_status "Restoring start-stop-status script"
-  if [ "${stage}" = 'false' ] ; then
-    cp "${temp_dir}"/start-stop-status "${SYNO_DOCKER_SCRIPT}"
+  if [ "${stage}" = 'false' ] && [ "${skip_docker_update}" = 'false' ]; then
+    cp "${temp_dir}"/start-stop-status "${SYNO_DOCKER_SCRIPT}" || terminate "Could not restore Docker start-stop-status script"
     if [ -f "${SCRIPT_DIR}/install_apparmor_profile.sh" ]; then
-      bash "${SCRIPT_DIR}/install_apparmor_profile.sh" --restore
+      if [ -f "${temp_dir}/docker-default.profile.synology-docker-managed" ]; then
+        cp -p "${temp_dir}/docker-default.profile" "${SYNO_DOCKER_JSON_PATH}/docker-default.profile" || terminate "Could not restore managed AppArmor profile"
+        cp -p "${temp_dir}/docker-default.profile.synology-docker-managed" "${SYNO_DOCKER_JSON_PATH}/docker-default.profile.synology-docker-managed" || terminate "Could not restore AppArmor ownership marker"
+        bash "${SCRIPT_DIR}/install_apparmor_profile.sh" || terminate "Could not activate restored AppArmor profile"
+      elif grep -q 'docker-default.profile' "${SYNO_DOCKER_SCRIPT}"; then
+        bash "${SCRIPT_DIR}/install_apparmor_profile.sh" || terminate "Could not activate legacy AppArmor profile"
+      else
+        bash "${SCRIPT_DIR}/install_apparmor_profile.sh" --restore || terminate "Could not restore AppArmor configuration"
+      fi
     fi
   else
     echo "Skipping restoring in STAGE mode or TARGET mode"
@@ -1553,6 +1561,10 @@ install_modules() {
 #   wrapper installed, profile installed and loaded, start script modified (if necessary)
 #======================================================================================================================
 install_apparmor_profile() {
+  if [ "${stage}" = 'true' ]; then
+    echo "Skipping AppArmor profile installation in STAGE mode"
+    return
+  fi
   if [[ "${install_apparmor}" == 'true' ]]; then
     print_status "Installing AppArmor parser wrapper and docker-default profile."
     bash "${SCRIPT_DIR}/install_apparmor_profile.sh" || terminate "Could not install AppArmor profile. Stopping."

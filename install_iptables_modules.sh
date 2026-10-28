@@ -1,5 +1,11 @@
 #!/bin/bash
 
+readonly MODULE_CURL_HTTPS_FLAGS=(--proto '=https' --proto-redir '=https' --tlsv1.2)
+curl_https_modules() {
+  curl "$@" "${MODULE_CURL_HTTPS_FLAGS[@]}"
+}
+
+initialize_modules() {
 # Test if script has root privileges, exit otherwise
 id=$(id -u)
 if [ "${id}" -ne 0 ]; then
@@ -19,6 +25,7 @@ else
     echo "Could not locate Container Manager or Docker start-stop-status script."
     exit 1
 fi
+# shellcheck disable=SC2016 # This is a literal startup-script anchor, not an expansion.
 INSERTAFTER='iptablestool --insmod "${DockerServName}" ${InsertModules}'
 # On DSM 7, dockerd runs as a systemd unit. Loading the modules from a drop-in for that unit survives Container
 # Manager package updates, which replace start-stop-status (and with it the older inserted insmod lines).
@@ -41,6 +48,7 @@ IP6DL="https://raw.githubusercontent.com/telnetdoogie-labs/synology-kernelmodule
 
 echo "Kernel Version: ${KERNEL_VERSION}"
 echo "Platform: ${PLATFORM_VERSION}"
+}
 
 output_result(){
   if [[ $1 == "true" ]]; then
@@ -84,9 +92,9 @@ module_files_present() {
 
 modules_available_for_download() {
   # Check if the modules can be downloaded
-  IP4_AVAIL=$([ $(curl -I -s -o /dev/null -w "%{http_code}" "$IP4DL") == "200" ] && echo 1 || echo 0)
-  IP6_AVAIL=$([ $(curl -I -s -o /dev/null -w "%{http_code}" "$IP6DL") == "200" ] && echo 1 || echo 0)
-  if [[ $IP4_AVAIL != 1 || $IP6_AVAIL != 1 ]]; then
+  IP4_AVAIL=$(curl_https_modules -ILsS --connect-timeout 10 --max-time 30 -o /dev/null -w "%{http_code}" "$IP4DL")
+  IP6_AVAIL=$(curl_https_modules -ILsS --connect-timeout 10 --max-time 30 -o /dev/null -w "%{http_code}" "$IP6DL")
+  if [ "$IP4_AVAIL" != "200" ] || [ "$IP6_AVAIL" != "200" ]; then
     # both files not available for download.
     echo "false"
     return 1
@@ -106,7 +114,8 @@ start_script_loads_modules() {
     echo "false"
     return 1
   fi
-  if ! grep -q 'Load raw modules' "${FILE}"; then
+  if ! grep -Fq "insmod ${MODULES_FOLDER}/${IP4MODULE}" "$FILE" ||
+    ! grep -Fq "insmod ${MODULES_FOLDER}/${IP6MODULE}" "$FILE"; then
     # the script does not currently load the modules
     echo "false"
     return 1
@@ -121,37 +130,43 @@ check_all() {
   echo
   echo -n " - .ko files in place      ?"
   KOS_PLACED=$(module_files_present)
-  output_result $KOS_PLACED
+  output_result "$KOS_PLACED"
 
   echo
   echo -n " - kernel modules loaded   ?"
   MODS_LOADED=$(modules_loaded)
-  output_result $MODS_LOADED
+  output_result "$MODS_LOADED"
 
   echo
   echo -n " - available for download  ?"
-  MOD_DL_AVAIL=$(modules_available_for_download)
-  output_result $MOD_DL_AVAIL
+  if [ "$KOS_PLACED" = 'true' ]; then
+    MOD_DL_AVAIL='true'
+    echo " not needed (already installed)"
+  else
+    MOD_DL_AVAIL=$(modules_available_for_download)
+    output_result "$MOD_DL_AVAIL"
+  fi
 
   echo
   echo -n " - modules load with Docker?"
   SCRIPT_ADDED=$(start_script_loads_modules)
-  output_result $SCRIPT_ADDED
+  output_result "$SCRIPT_ADDED"
   echo
   echo
 }
 
-download_and_place_modules() {
+download_and_place_modules() (
   echo "Downloading and placing modules in /lib/modules folder..."
-  curl -sO ${IP4DL} && echo -n "." || return 1
-  curl -sO ${IP6DL} && echo -n "." || return 1
-  cp -f ./${IP4MODULE} ${MODULES_FOLDER}/${IP4MODULE} && echo -n "." || return 1
-  cp -f ./${IP6MODULE} ${MODULES_FOLDER}/${IP6MODULE} && echo -n "." || return 1
-  chown root:root ${MODULES_FOLDER}/${IP4MODULE} ${MODULES_FOLDER}/${IP6MODULE} && echo -n "." || return 1
-  chmod 644 ${MODULES_FOLDER}/${IP4MODULE} ${MODULES_FOLDER}/${IP6MODULE} && echo -n "." || return 1
-  rm ./${IP4MODULE} ./${IP6MODULE} && echo -n "." || return 1
+  module_download_dir=$(mktemp -d "${TMPDIR:-/tmp}/synology-docker-modules.XXXXXX") || return 1
+  trap 'rm -rf "$module_download_dir"' EXIT
+  curl_https_modules -fsSL --connect-timeout 10 --max-time 120 "$IP4DL" -o "$module_download_dir/$IP4MODULE" && echo -n "." || return 1
+  curl_https_modules -fsSL --connect-timeout 10 --max-time 120 "$IP6DL" -o "$module_download_dir/$IP6MODULE" && echo -n "." || return 1
+  cp -f "$module_download_dir/$IP4MODULE" "$MODULES_FOLDER/$IP4MODULE" && echo -n "." || return 1
+  cp -f "$module_download_dir/$IP6MODULE" "$MODULES_FOLDER/$IP6MODULE" && echo -n "." || return 1
+  chown root:root "$MODULES_FOLDER/$IP4MODULE" "$MODULES_FOLDER/$IP6MODULE" && echo -n "." || return 1
+  chmod 644 "$MODULES_FOLDER/$IP4MODULE" "$MODULES_FOLDER/$IP6MODULE" && echo -n "." || return 1
   echo
-}
+)
 
 install_and_validate_modules() {
   echo "Installing and validating the kernel modules..."
@@ -195,6 +210,7 @@ remove_script_insert() {
 }
 
 
+run_modules() {
 # Start the main flow
 check_all
 
@@ -209,7 +225,7 @@ if [[ $KOS_PLACED != "true" ]]; then
     exit 1
   fi
 
-  download_and_place_modules
+  download_and_place_modules || exit 1
 
   SUCCESS=$(module_files_present)
   if [[ $SUCCESS != "true" ]]; then
@@ -239,7 +255,7 @@ fi
 if [[ $SCRIPT_ADDED != "true" ]]; then
   # the modules aren't loaded with the start-stop-status script. We will need to modify it.
 
-  modify_script
+  modify_script || exit 1
 
   SUCCESS=$(start_script_loads_modules)
   if [[ $SUCCESS != "true" ]]; then
@@ -256,3 +272,9 @@ if [[ "${USE_SYSTEMD}" == "true" ]]; then
 fi
 
 check_all
+}
+
+if [ "${BASH_SOURCE[0]}" == "$0" ]; then
+  initialize_modules
+  run_modules
+fi

@@ -5,7 +5,7 @@
 >
 > Originally forked from [markdumay/synology-docker](https://github.com/markdumay/synology-docker)
 
-![Last Commit][synology-docker-last-commit] ![Issues][synology-docker-issues] ![Pull Requests][synology-docker-pulls] ![License][synology-docker-license]
+[![CI](https://github.com/telnetdoogie-labs/synology-docker/actions/workflows/ci.yml/badge.svg)](https://github.com/telnetdoogie-labs/synology-docker/actions/workflows/ci.yml) ![Last Commit][synology-docker-last-commit] ![Issues][synology-docker-issues] ![Pull Requests][synology-docker-pulls] ![License][synology-docker-license]
 
 ## Why this exists
 
@@ -87,6 +87,8 @@ This:
 - Sets Docker’s default log driver to `local`
 - Restarts Docker
 
+The updater now refuses to install a new Docker engine while any container still uses the removed `db` logger. Fix those containers first: recreate them from their Compose project, or use a migration tool such as [stateful-docker-migration-flow](https://github.com/gundestrup/stateful-docker-migration-flow) to export non‑Compose containers to reviewed Compose projects before recreating them.
+
 Then check which containers are _still_ using `db`:
 
 ```bash
@@ -112,9 +114,16 @@ cd /volume1/docker/jellyfin
 docker-compose up -d --force-recreate
 ```
 
-Re‑run `syno_docker_list_containers.sh` until **everything** says `local`.
+For a **non‑Compose** container, `syno_docker_list_containers.sh` prints a best‑guess `docker run` command you can adapt manually. For a safer path, the companion tool [stateful-docker-migration-flow](https://github.com/gundestrup/stateful-docker-migration-flow) generates a reviewed Compose project per container (private `.env`, manifest tracking, typed `RECREATE` confirmation) so a non‑Compose container can be brought under Compose management:
 
-> Containers created via `docker run` will show a _best‑guess_ recreate command. Verify it before running.
+```bash
+# On the NAS, with the migration tool checked out:
+./sdmf            # guided menu: inventory -> export -> validate -> recreate
+```
+
+Re‑run `syno_docker_list_containers.sh` until **everything** says `local`. The listing includes stopped containers so `db`-logger failures remain visible.
+
+> Containers created via `docker run` will show a _best‑guess_ recreate command. Its environment values are deliberately hidden; replace the required `--env-file /REVIEW_AND_CREATE_ENV_FILE_BEFORE_RUNNING` with a reviewed, private environment file before use. Verify all remaining settings before running it.
 
 ### Step 3: Upgrade Docker & Compose
 
@@ -169,15 +178,15 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 
 ## Options
 
-| Option              | Description                                  |
-| ------------------- | -------------------------------------------- |
-| `--docker VERSION`  | Target Docker version                        |
-| `--compose VERSION` | Target Compose version                       |
-| `--backup NAME`     | Backup file name                             |
-| `--force`           | Skip compatibility checks                    |
-| `--stage`           | Download only, no install                    |
-| `--skip-iptables`   | Don't check for / install iptables modules   |
-| `--fuse-overlayfs`  | Switch storage to fuse-overlayfs (see below) |
+| Option              | Description                                                                  |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `--docker VERSION`  | Target Docker version                                                        |
+| `--compose VERSION` | Target Compose version                                                       |
+| `--backup NAME`     | Backup file name                                                             |
+| `--force`           | Skip confirmation and compatibility checks; allow an explicitly requested downgrade |
+| `--stage`           | Download and extract without installing; print the retained staging path   |
+| `--skip-iptables`   | Don't check for / install iptables modules                                   |
+| `--fuse-overlayfs`  | Switch storage to fuse-overlayfs (see below)                                |
 
 ## fuse-overlayfs (volumes on `aufs` without overlay support)
 
@@ -201,6 +210,45 @@ Things to know before switching:
 - It starts a separate containerd at boot (`/usr/local/etc/rc.d/containerd-fuse-overlayfs.sh`) and disables Synology's `updater` tool, which would otherwise switch the driver back to `aufs`.
 - The installer refuses to run on any driver other than `aufs`, and does nothing if your kernel supports overlay.
 - To undo it: `sudo ./install_fuse_overlayfs.sh --uninstall`, then restart Container Manager.
+
+## Testing
+
+Run the mocked regression tests in a disposable Docker container:
+
+```bash
+docker build -t synology-docker-tests -f tests/Dockerfile .
+docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests
+```
+
+The supported test scope is DSM major versions 6 and 7 only. These disposable tests cover version selection, stage/backup/restore failure paths, DSM 6/7 service failures, forwarding edits, verified module downloads, AppArmor rollback, and safe container-command rendering. They mock DSM; they do not modify a live Docker service or substitute for kernel and package tests on a NAS.
+
+### Validation status
+
+- **DSM 7:** an earlier hardening revision was live-tested on DSM 7.4.1 with Docker Engine 29.8.2 and Docker Compose 5.6.0, including kernel-module/AppArmor preparation and `db`-logger recovery workflows. This upstream-aligned revision has not yet been retested on a NAS.
+- **DSM 6:** implemented and covered by mocked service-control tests, but **not yet validated on physical hardware**. Treat DSM 6 support as best-effort until a real DSM 6 NAS passes the runtime probe, update, workload, and rollback checks.
+
+Before running the updater on a NAS, check its runtime prerequisites with:
+
+```bash
+sh tests/check-dsm-runtime.sh 29
+```
+
+Replace `29` with the planned Docker Engine major version. The updater requires `/bin/bash`, `jq`, `curl`, `docker`, `realpath`, `readlink -f`, `mktemp -d`, `diff`, `date`, and GNU-compatible `timeout --foreground`, in addition to standard shell utilities. It also needs DSM's `synopkg` (DSM 7) or `synoservicectl` (DSM 6). For a Docker Engine 28+ target, the probe additionally checks `insmod`, `lsmod`, `iptables`, and `/bin/get_key_value`. Kernel modules are downloaded over HTTPS (TLS 1.2) from the matching `synology-kernelmodules` release for your kernel and platform; unsupported combinations need manually installed modules. `/bin/sh` may be a different shell; run scripts through their shebangs rather than invoking Bash scripts with `sh`. Semgrep and SonarQube are review tools for a development host or CI, not runtime dependencies on the NAS.
+
+The [virtual-dsm project](https://github.com/vdsm/virtual-dsm) can boot selected DSM 7 `.pat` releases, but requires a Linux KVM host; its README says Docker Desktop on macOS is unsupported. Its DSM 6 path has an [open D-Bus stability issue](https://github.com/vdsm/virtual-dsm/issues/1122), so validate DSM 6 on real hardware. The project further restricts use of Virtual DSM to official Synology hardware. Use actual NAS hardware for package, service-control, and kernel-module integration testing; keep every test to DSM 6 or DSM 7.
+
+### Manual integration matrix
+
+Run these checks only in a disposable, snapshot-backed environment with the Synology Docker package already installed:
+
+| DSM major | Suggested coverage | Environment |
+| ---------- | ------------------ | ----------- |
+| 6 | Latest DSM 6.2.4 update | Real Synology hardware |
+| 7 | DSM 7.1 and 7.2 | Real hardware or supported Virtual DSM/KVM host |
+
+For each environment, run `sh tests/check-dsm-runtime.sh 29` (using the planned Engine major), record `docker -v` and `docker-compose -v`, start a small representative workload, then run `sudo ./syno_docker_update.sh update`. Verify the service is started, both version commands succeed, and the workload is healthy. Test rollback separately with a named backup and verify the restored versions. Do not treat a successful Virtual DSM run as coverage of physical kernel-module or driver compatibility.
+
+An update stops rather than silently downgrading if release detection fails or an automatic target is older than the installed version. To deliberately downgrade during `update`, specify `--docker VERSION` or `--compose VERSION` together with `--force`; an older offline Docker archive passed to `install PATH` also requires `--force`. Required module and AppArmor preparation is still performed. Backups are private and are never overwritten. `--stage update` leaves downloads in the printed private directory so they can be inspected or passed to `install PATH`. If a change fails after the service has stopped, the script reports the backup path and exits nonzero; it does not automatically restart mixed binaries. Diagnose the failure and restore the backup with `sudo ./syno_docker_update.sh --backup /path/to/backup.tgz restore` before retrying.
 
 ## Contributing
 

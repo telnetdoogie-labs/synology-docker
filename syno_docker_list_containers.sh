@@ -1,20 +1,28 @@
 #!/bin/bash
+set -euo pipefail
 
-readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-
-# Store container information in an array
-containers_info=()
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
+readonly SCRIPT_DIR
 readonly NOT_COMPOSE="!---not_managed_by_compose---!"
 readonly MAYBE_PORTAINER="!---maybe_managed_by_portainer---!"
 
-# Get the list of containers and their compose locations
-for c in $(docker ps -q); do
+# Store container information in an array.
+# Stopped containers are included so containers stuck on the removed 'db'
+# logger remain visible.
+containers_info=()
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
   container_info=$(docker inspect "$c" --format "{{.Name}} {{if index .Config.Labels \"com.docker.compose.project.config_files\"}}{{index .Config.Labels \"com.docker.compose.project.config_files\"}}{{else}}${NOT_COMPOSE}{{end}} {{.HostConfig.LogConfig.Type}}")
+  container_info=${container_info#/}
   containers_info+=("$container_info")
-done
+done < <(docker ps -aq)
 
 # Sort the array based on the second field (compose location)
-IFS=$'\n' sorted_containers_info=($(printf "%s\n" "${containers_info[@]}" | sort -t " " -k 2))
+sorted_containers_info=()
+while IFS= read -r info; do
+  [ -n "$info" ] || continue
+  sorted_containers_info+=("$info")
+done < <(printf "%s\n" "${containers_info[@]}" | sort -t " " -k 2)
 # Original with -u - this unfortunately hides portainer containers.
 # IFS=$'\n' sorted_containers_info=($(printf "%s\n" "${containers_info[@]}" | sort -t -u " " -k 2))
 
@@ -23,12 +31,13 @@ max_container_length=0
 max_location_length=0
 max_logger_length=7
 for info in "${sorted_containers_info[@]}"; do
-  container=$(echo "$info" | awk '{print $1}')
-  location=$(echo "$info" | awk '{print $2}')
-  logger=$(echo "$info" | awk '{print $3}')
-  [ ${#container} -gt $max_container_length ] && max_container_length=${#container}
-  [ ${#location} -gt $max_location_length ] && max_location_length=${#location}
-  [ ${#logger} -gt $max_logger_length ] && max_logger_length=${#logger}
+  container=${info%% *}
+  logger=${info##* }
+  location=${info#* }
+  location=${location% *}
+  [ "${#container}" -gt "$max_container_length" ] && max_container_length=${#container}
+  [ "${#location}" -gt "$max_location_length" ] && max_location_length=${#location}
+  [ "${#logger}" -gt "$max_logger_length" ] && max_logger_length=${#logger}
 done
 
 # Print the header
@@ -43,13 +52,15 @@ printf "%-${max_container_length}s  %-${max_location_length}s %-${max_logger_len
 docker_managed=()
 # Print the sorted container information
 for info in "${sorted_containers_info[@]}"; do
-  container=$(echo "$info" | awk '{print $1}')
-  location=$(echo "$info" | awk '{print $2}') # for spaces>>    | sed -e 's/^[^ ]* //')
-  logger=$(echo "$info" | awk '{print $3}')
-  if [ "$location" != "$NOT_COMPOSE" ] && [ ! -f $location ];then
+  container=${info%% *}
+  logger=${info##* }
+  location=${info#* }
+  location=${location% *}
+  raw_location=$location
+  if [ "$location" != "$NOT_COMPOSE" ] && [ ! -f "$location" ];then
   location="${MAYBE_PORTAINER}"
   fi
-  if [ "$location" == "$NOT_COMPOSE" ]; then
+  if [ "$raw_location" == "$NOT_COMPOSE" ]; then
   docker_managed+=("$container")
   fi
   printf "%-${max_container_length}s  %-${max_location_length}s %s\n" "$container" "$location" "$logger"
@@ -65,11 +76,11 @@ if [ ${#docker_managed[@]} -gt 0 ]; then
   echo "If these containers already show as 'local' logger, there is no need to recreate them manually"
   echo
   for container in "${docker_managed[@]}"; do
-  docker_command=$("${SCRIPT_DIR}/container_recreate.sh" "$container")
-  echo "----------------------------------------------------"
-  echo "Container: ${container}"
-  echo "----------------------------------------------------"
-  echo -e "$docker_command"
-  echo
+    docker_command=$("${SCRIPT_DIR}/container_recreate.sh" "$container")
+    echo "----------------------------------------------------"
+    echo "Container: ${container}"
+    echo "----------------------------------------------------"
+    printf '%s\n' "$docker_command"
+    echo
   done
 fi

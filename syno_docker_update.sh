@@ -1545,6 +1545,10 @@ fail_start() {
 #   modules installed, start script modified (if necessary)
 #======================================================================================================================
 install_modules() {
+  if [ "${stage}" = 'true' ]; then
+    echo "Skipping module installation in STAGE mode"
+    return
+  fi
   if [[ "${install_iptables_modules}" == 'true' ]]; then
     print_status "Checking for / Installing iptables modules."
     echo "   Based on this version of docker, we'll need to check for / install iptables modules..."

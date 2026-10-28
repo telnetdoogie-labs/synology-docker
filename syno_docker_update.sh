@@ -45,16 +45,18 @@ validate_dependencies(){
 readonly RED='\e[31m' # Red color
 readonly NC='\e[m' # No color / reset
 readonly BOLD='\e[1m' # Bold font
-readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-readonly DSM_SUPPORTED_VERSION=6
-readonly DEFAULT_DOCKER_VERSION='20.10.11'
-readonly DEFAULT_COMPOSE_VERSION='2.1.1'
+SCRIPT_DIR=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+readonly SCRIPT_DIR
 readonly CPU_ARCH='x86_64'
 readonly DOWNLOAD_DOCKER="https://download.docker.com/linux/static/stable/${CPU_ARCH}"
 readonly DOWNLOAD_GITHUB='https://github.com/docker/compose'
 readonly PINNED_RUNC_VERSION='1.4.3'
 readonly PINNED_RUNC="https://github.com/opencontainers/runc/releases/download/v${PINNED_RUNC_VERSION}/runc.amd64"
 readonly GITHUB_API_COMPOSE='https://api.github.com/repos/docker/compose/releases/latest'
+readonly UPDATE_CURL_HTTPS_FLAGS=(--proto '=https' --proto-redir '=https' --tlsv1.2)
+curl_https_update() {
+  curl "$@" "${UPDATE_CURL_HTTPS_FLAGS[@]}"
+}
 if [ -d "/var/packages/ContainerManager" ]; then
   readonly SYNO_DOCKER_DIR='/var/packages/ContainerManager'
   readonly SYNO_DOCKER_SERV_NAME='ContainerManager'
@@ -110,6 +112,8 @@ command=''
 target='all'
 target_docker_version=''
 target_compose_version=''
+target_docker_explicit='false'
+target_compose_explicit='false'
 backup_filename_flag='false'
 step=0
 total_steps=0
@@ -251,10 +255,10 @@ validate_current_version() {
     terminate "This script supports ${CPU_ARCH} CPUs only, use --force to override"
   fi
 
-  # Test if host is DSM 6 or later, exit otherwise
-  if [ "${dsm_major_version}" -lt "${DSM_SUPPORTED_VERSION}" ] ; then
-    terminate "This script supports DSM 6.x or later only, use --force to override"
-  fi
+  case "${dsm_major_version}" in
+    6 | 7 ) ;;
+    * ) terminate "This script supports DSM 6 and 7 only" ;;
+  esac
 
   # Restoring and controlling the service don't depend on the current versions, and are needed most when Docker is
   # stopped or broken
@@ -292,19 +296,37 @@ validate_current_version() {
 # Outputs:
 #   Updated 'target_docker_version'.
 #======================================================================================================================
+is_semver() {
+  printf '%s\n' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+version_is_newer() {
+  local left_major left_minor left_patch right_major right_minor right_patch
+  IFS=. read -r left_major left_minor left_patch <<< "$1"
+  IFS=. read -r right_major right_minor right_patch <<< "$2"
+  (( 10#$left_major > 10#$right_major ||
+    (10#$left_major == 10#$right_major && 10#$left_minor > 10#$right_minor) ||
+    (10#$left_major == 10#$right_major && 10#$left_minor == 10#$right_minor &&
+      10#$left_patch > 10#$right_patch) ))
+}
+
 detect_available_downloads() {
-  if [ -z "${target_docker_version}" ] ; then
-    downloads=$(find "${download_dir}/" -maxdepth 1 -type f | cut -c 4- | \
-      grep -Eo 'docker-[0-9]*.[0-9]*.[0-9]*(-ce)?.tgz')
-    latest_download=$(echo "${downloads}" | sort -bt. -k1,1 -k2,2n -k3,3n -k4,4n -k5,5n | tail -1)
-    target_docker_version=$(echo "${latest_download}" | sed "s/docker-//g" | sed "s/.tgz//g")
+  if [ -z "${target_docker_version}" ]; then
+    for archive in "${download_dir}"/docker-*.tgz; do
+      [ -f "$archive" ] || continue
+      candidate=${archive##*/}
+      candidate=${candidate#docker-}
+      candidate=${candidate%.tgz}
+      if is_semver "$candidate" && { [ -z "$target_docker_version" ] || version_is_newer "$candidate" "$target_docker_version"; }; then
+        target_docker_version=$candidate
+      fi
+    done
   fi
 }
 
 #======================================================================================================================
 # Detects latest stable versions of Docker and Docker Compose available for download. The detection is skipped if a
-# specific target Docker and/or Compose version is already specified. Default versions are assigned if the detection
-# fails for some reason.
+# specific target Docker and/or Compose version is already specified. Version lookup failures stop the operation.
 #======================================================================================================================
 # Globals:
 #   - target_docker_version
@@ -316,25 +338,25 @@ detect_available_downloads() {
 #======================================================================================================================
 detect_available_versions() {
   # Detect latest available Docker version
-  if [ -z "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] ; then
-    docker_bin_files=$(curl -s "${DOWNLOAD_DOCKER}/" | grep -Eo '>docker-[0-9]*.[0-9]*.[0-9]*(-ce)?.tgz' | cut -c 2-)
-    latest_docker_bin="$(echo "${docker_bin_files}" | sort -bt. -k1,1 -k2,2n -k3,3n -k4,4n -k5,5n | tail -1)"
-    target_docker_version=$(echo "${latest_docker_bin}" | sed "s/docker-//g" | sed "s/.tgz//g" )
-
-    if [ -z "${target_docker_version}" ] ; then
-      echo "Could not detect Docker versions available for download, setting default value"
-      target_docker_version="${DEFAULT_DOCKER_VERSION}"
-    fi
+  if [ -z "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ]; then
+    docker_index=$(curl_https_update -fsSL "${DOWNLOAD_DOCKER}/") || terminate "Could not query available Docker versions"
+    docker_bin_files=$(printf '%s\n' "$docker_index" | grep -Eo '>docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' | cut -c 2-)
+    while IFS= read -r docker_bin; do
+      [ -n "$docker_bin" ] || continue
+      candidate=${docker_bin#docker-}
+      candidate=${candidate%.tgz}
+      if [ -z "$target_docker_version" ] || version_is_newer "$candidate" "$target_docker_version"; then
+        target_docker_version=$candidate
+      fi
+    done <<< "$docker_bin_files"
+    [ -n "$target_docker_version" ] || terminate "Could not detect Docker versions available for download"
   fi
 
   # Detect latest available stable Docker Compose version (ignores release candidates)
-  if [ -z "${target_compose_version}" ] && [ "${skip_compose_update}" = 'false' ] ; then
-    target_compose_version=$(curl -s "${GITHUB_API_COMPOSE}" | jq -r '.tag_name | ltrimstr("v")')
-
-    if [ -z "${target_compose_version}" ] || [ "${target_compose_version}" = "null" ] ; then
-      echo "Could not detect Docker Compose versions available for download, setting default value"
-      target_compose_version="${DEFAULT_COMPOSE_VERSION}"
-    fi
+  if [ -z "${target_compose_version}" ] && [ "${skip_compose_update}" = 'false' ]; then
+    compose_release=$(curl_https_update -fsSL "${GITHUB_API_COMPOSE}") || terminate "Could not query available Docker Compose versions"
+    target_compose_version=$(printf '%s\n' "$compose_release" | jq -er '.tag_name | ltrimstr("v")') || terminate "Could not detect Docker Compose version"
+    is_semver "$target_compose_version" || terminate "Unrecognized available Docker Compose version: $target_compose_version"
   fi
 }
 
@@ -572,6 +594,17 @@ define_update() {
   [ "${skip_docker_update}" = 'true' ] && total_steps=$((total_steps-2))  # no Docker download or extract step
   [ "${skip_compose_update}" = 'true' ] && total_steps=$((total_steps-1))  # no Compose download step
 
+  if [ "${skip_docker_update}" = 'false' ] && is_semver "$docker_version" &&
+    version_is_newer "$docker_version" "$target_docker_version" &&
+    { [ "$force" != 'true' ] || [ "$target_docker_explicit" != 'true' ]; }; then
+    terminate "Target Docker version is older than installed version; specify --docker VERSION --force to downgrade"
+  fi
+  if [ "${skip_compose_update}" = 'false' ] && is_semver "$compose_version" &&
+    version_is_newer "$compose_version" "$target_compose_version" &&
+    { [ "$force" != 'true' ] || [ "$target_compose_explicit" != 'true' ]; }; then
+    terminate "Target Docker Compose version is older than installed version; specify --compose VERSION --force to downgrade"
+  fi
+
   if [ "${force}" != 'true' ] ; then
     # Docker 29.7.0+ bundles runc 1.4.3+, which works on DSM 5.x kernels. An older runc on such a target means a
     # previously pinned (or outdated) runc is still installed, so reinstall the Docker binaries to replace it.
@@ -581,24 +614,31 @@ define_update() {
       echo "runc ${runc_version} is older than the version bundled with Docker ${target_docker_version}," \
         "reinstalling Docker binaries to refresh runc"
     fi
-    if [ "${docker_version}" = "${target_docker_version}" ] && \
-      [ "${compose_version}" = "${target_compose_version}" ] && [ "${refresh_runc}" = 'false' ] ; then
-      terminate_with_warning "Already on target version for Docker and Docker Compose"
-    fi
     if [ "${docker_version}" = "${target_docker_version}" ] && [ "${skip_docker_update}" = 'false' ] && \
       [ "${refresh_runc}" = 'false' ] ; then
       skip_docker_update='true'
       total_steps=$((total_steps-2))  # no Docker download or extract step
     fi
-    if [ "${compose_version}" = "${target_compose_version}" ] && [ "${skip_compose_update}" = 'false' ]; then
+
+    if [ "${skip_compose_update}" = 'false' ] &&
+      [ "${compose_version}" = "${target_compose_version}" ]; then
       skip_compose_update='true'
       total_steps=$((total_steps-1))
     fi
 
-    log_driver=$(jq -r '.["log-driver"] // empty' "${SYNO_DOCKER_JSON}")
-    if [ "$log_driver" = "local" ]; then
-      skip_driver_update='true'  # the log driver step still runs (and reports it's skipping)
+    if [ "${skip_driver_update}" = 'false' ]; then
+      log_driver=$(jq -r '.["log-driver"] // empty' "${SYNO_DOCKER_JSON}") ||
+        terminate "Could not read Docker daemon configuration"
+      if [ "$log_driver" = 'local' ]; then
+        skip_driver_update='true'
+        total_steps=$((total_steps-1))
+      fi
     fi
+  fi
+
+  if [ "$skip_docker_update" = 'true' ] && [ "$skip_compose_update" = 'true' ] &&
+    [ "$skip_driver_update" = 'true' ]; then
+    terminate_with_warning "Docker and Docker Compose are already on target versions"
   fi
 
   define_storage_driver
@@ -618,6 +658,9 @@ define_update() {
 #   Updated 'install_iptables_modules', 'install_apparmor' and 'total_steps'.
 #======================================================================================================================
 define_setup_steps() {
+  if [ "${skip_docker_update}" = 'true' ]; then
+    return
+  fi
   major="${target_docker_version%%.*}"
   if [[ "$major" -ge 28 && "${skip_iptables_modules}" = 'false' ]]; then
     install_iptables_modules='true'
@@ -715,6 +758,13 @@ define_storage_driver() {
     terminate "Docker ${target_docker_version} can't use the 'aufs' storage driver set in dockerd.json, so it would not start after the update. ${advice}"
   fi
   echo "WARNING: Docker ${target_docker_version} can't use the 'aufs' storage driver; continuing because of --force. ${advice}"
+}
+
+validate_offline_target() {
+  if [ "$skip_docker_update" = 'false' ] && [ "$force" != 'true' ] && is_semver "$docker_version" &&
+    version_is_newer "$docker_version" "$target_docker_version"; then
+    terminate "Offline Docker archive is older than installed version; use --force to downgrade"
+  fi
 }
 
 #======================================================================================================================
@@ -1034,7 +1084,7 @@ execute_download_bin() {
   if [ "${skip_docker_update}" = 'false' ] ; then
     target_docker_bin="docker-${target_docker_version}.tgz"
     print_status "Downloading target Docker binary (${DOWNLOAD_DOCKER}/${target_docker_bin})"
-    response=$(curl "${DOWNLOAD_DOCKER}/$target_docker_bin" --write-out '%{http_code}' \
+    response=$(curl_https_update "${DOWNLOAD_DOCKER}/$target_docker_bin" --write-out '%{http_code}' \
       -o "${download_dir}/${target_docker_bin}")
     if [ "${response}" != 200 ] ; then
       terminate "Binary could not be downloaded"
@@ -1142,7 +1192,7 @@ execute_download_compose() {
     fi
 
     print_status "Downloading target Docker Compose binary (${compose_bin})"
-    response=$(curl -L "${compose_bin}" --write-out '%{http_code}' -o "${download_dir}/docker-compose")
+    response=$(curl_https_update -L "${compose_bin}" --write-out '%{http_code}' -o "${download_dir}/docker-compose")
     if [ "${response}" != 200 ] ; then
       terminate "Binary could not be downloaded"
     fi
@@ -1513,26 +1563,30 @@ main() {
     terminate "You need to be root to run this script"
   fi
 
+  trap 'cleanup_on_exit' EXIT
+
   # Validate dependencies
   validate_dependencies
 
   # Process and validate command-line arguments
-  while [ "$1" != "" ]; do
+  while [ "${1:-}" != "" ]; do
     case "$1" in
       -b | --backup )
         shift
-        docker_backup_filename="$1"
+        docker_backup_filename="${1:-}"
         backup_filename_flag='true'
         validate_backup_filename "Filename not provided"
         ;;
       -c | --compose )
         shift
-        target_compose_version="$1"
+        target_compose_version="${1:-}"
+        target_compose_explicit='true'
         validate_version_input "${target_compose_version}" "Unrecognized target Docker Compose version"
         ;;
       -d | --docker )
         shift
-        target_docker_version="$1"
+        target_docker_version="${1:-}"
+        target_docker_explicit='true'
         validate_version_input "${target_docker_version}" "Unrecognized target Docker version"
         ;;
       -f | --force )

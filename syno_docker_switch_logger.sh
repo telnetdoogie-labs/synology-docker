@@ -58,14 +58,26 @@ echo
 #  .["iptables"] = true
 #' "$DOCKERD_FILE" > "$DOCKERD_FILE.tmp" && mv "$DOCKERD_FILE.tmp" "$DOCKERD_FILE"
 
-jq '
+temp_file=$(mktemp "${DOCKERD_FILE}.XXXXXX") || terminate "Could not create temporary Docker daemon configuration"
+if ! cp -p "$DOCKERD_FILE" "$temp_file"; then
+  rm -f "$temp_file"
+  terminate "Could not preserve Docker daemon configuration permissions"
+fi
+if ! jq '
   .["group"] = "administrators" |
   .["log-driver"] = "local" |
   .["log-opts"] = {
     "max-file": "5",
     "max-size": "20m"
   }
-' "$DOCKERD_FILE" > "$DOCKERD_FILE.tmp" && mv "$DOCKERD_FILE.tmp" "$DOCKERD_FILE"
+' "$DOCKERD_FILE" > "$temp_file"; then
+  rm -f "$temp_file"
+  terminate "Could not update Docker daemon configuration"
+fi
+if ! mv "$temp_file" "$DOCKERD_FILE"; then
+  rm -f "$temp_file"
+  terminate "Could not replace Docker daemon configuration"
+fi
 
 # Output the new JSON file
 echo "Updated dockerd.json file:"

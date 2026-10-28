@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 #======================================================================================================================
 # Title         : syno_docker_update.sh
@@ -29,12 +29,17 @@ validate_dependencies(){
   # Define the presence of dependent files
   DEPENDENT_FILES=(
     "container_recreate.sh"
+    "install_apparmor_profile.sh"
+    "install_iptables_modules.sh"
     "syno_docker_list_containers.sh"
     "syno_docker_switch_logger.sh")
   # Loop through each file in the array and check if it exists
   for file in "${DEPENDENT_FILES[@]}"; do
     if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
       terminate "Error: Required file '$file' is missing in the script directory ($SCRIPT_DIR). You may need to do a git pull."
+    fi
+    if [ "$file" != 'install_apparmor_profile.sh' ] && [ ! -x "$SCRIPT_DIR/$file" ]; then
+      terminate "Required file '$file' is not executable in $SCRIPT_DIR"
     fi
   done
 }
@@ -99,9 +104,9 @@ fi
 dsm_major_version=''
 docker_version=''
 compose_version=''
-temp_dir="/tmp/docker_update"
+temp_dir=''
 backup_dir="${PWD}"
-download_dir="${temp_dir}"
+download_dir=''
 docker_backup_filename="docker_backup_$(date +%Y%m%d_%H%M%S).tgz"
 skip_docker_update='false'
 skip_compose_update='false'
@@ -122,6 +127,8 @@ skip_iptables_modules='false'
 install_apparmor='false'
 refresh_runc='false'
 install_fuse='false'
+service_stopped='false'
+preserve_stage='false'
 
 
 #======================================================================================================================
@@ -490,16 +497,14 @@ validate_provided_download_path() {
 }
 
 #======================================================================================================================
-# Verifies if the provided backup directory is provided and available, exists otherwise. The backup directory should
-# also differ from the temp path, to avoid accidentaly removing the backup files. The backup directory is formatted as
-# absolute path.
+# Verifies if the provided backup directory is provided and available, exists otherwise. The backup directory is
+# formatted as absolute path.
 #======================================================================================================================
 # Globals:
 #   - backup_dir
 # Arguments:
 #   $1 - Error message when path is not specified
 #   $2 - Error message when path is not found
-#   $3 - Error message when backup path equals temp directory
 # Outputs:
 #   Terminates with non-zero exit code if the provided backup path is missing, unavailable, or invalid. Formats the
 #   backup directory as absolute path.
@@ -519,12 +524,6 @@ validate_provided_backup_path() {
   if [ ! -d "${backup_dir}" ] ; then
     usage
     terminate "$2"
-  fi
-
-  # confirm backup dir is different from temp dir
-  if [ "${backup_dir}" = "${temp_dir}" ] ; then
-    usage
-    terminate "$3"
   fi
 }
 
@@ -849,6 +848,9 @@ validate_syno_tools() {
     "7")
       resolve_syno_bin "synopkg" "${SYNOPKG_BIN}" >/dev/null
       ;;
+    *)
+      terminate "Unsupported DSM major version: ${dsm_major_version}"
+      ;;
   esac
 }
 
@@ -857,16 +859,18 @@ validate_syno_tools() {
 #======================================================================================================================
 
 #======================================================================================================================
-# Recreates an empty temp folder.
+# Creates a private temp folder for this run.
 #======================================================================================================================
 # Globals:
 #   - temp_dir
 # Outputs:
-#   An empty temp folder.
+#   An empty private temp folder.
 #======================================================================================================================
 execute_prepare() {
-  execute_clean 'silent'
-  mkdir -p "${temp_dir}"
+  temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/docker_update.XXXXXX") || terminate "Could not create a private temp directory"
+  if [ -z "$download_dir" ]; then
+    download_dir=$temp_dir
+  fi
 }
 
 #======================================================================================================================
@@ -1012,11 +1016,12 @@ print_syno_diagnostics() {
 execute_stop_syno() {
   print_status "Stopping Docker service"
 
-  if [ "${stage}" = 'true' ] ; then
+  if [ "${stage}" = 'true' ]; then
     echo "Skipping Docker service control in STAGE mode"
     return
   fi
 
+  service_stopped='true'
   stop_started_at=$(date +%s)
   syno_status=$(get_syno_status)
   case "${syno_status}" in
@@ -1028,9 +1033,12 @@ execute_stop_syno() {
     stopped)
       echo "   - ${SYNO_DOCKER_SERV_NAME} is already stopped, continuing"
       ;;
-    *)
+    starting|stopping)
       echo "   - ${SYNO_DOCKER_SERV_NAME} is '${syno_status}', waiting for it to finish stopping" \
         "(timeout ${SYNO_SERVICE_STOP_TIMEOUT})"
+      ;;
+    *)
+      terminate "Could not determine ${SYNO_DOCKER_SERV_NAME} status: ${syno_status}"
       ;;
   esac
 
@@ -1052,7 +1060,7 @@ execute_stop_syno() {
 
 #======================================================================================================================
 # Creates a backup of the current Docker binaries (including Docker Compose), Docker daemon configuration, and
-# the 'start-stop-status' script.
+# the 'start-stop-status' script and any managed AppArmor profile.
 #======================================================================================================================
 # Globals:
 #   - backup_dir
@@ -1061,12 +1069,28 @@ execute_stop_syno() {
 #   A backup archive.
 #======================================================================================================================
 execute_backup() {
-  print_status "Backing up current Docker binaries (${backup_dir}/${docker_backup_filename})"
-  cd "${backup_dir}" || terminate "Backup directory does not exist"
-  tar -czvf "${docker_backup_filename}" -C "$SYNO_DOCKER_BIN_PATH" bin -C "$SYNO_DOCKER_JSON_PATH" "dockerd.json" \
-    -C "${SYNO_DOCKER_SCRIPT_PATH}" "start-stop-status"
-  if [ ! -f "${docker_backup_filename}" ] ; then
-    terminate "Backup issue"
+  local backup_file backup_temp
+  local -a backup_sources
+  backup_file="${backup_dir}/${docker_backup_filename}"
+  print_status "Backing up current Docker binaries ($backup_file)"
+  [ -d "$backup_dir" ] || terminate "Backup directory does not exist"
+  if [ -e "$backup_file" ] || [ -L "$backup_file" ]; then
+    terminate "Backup already exists: $backup_file"
+  fi
+  backup_sources=(-C "$SYNO_DOCKER_BIN_PATH" bin -C "$SYNO_DOCKER_JSON_PATH" dockerd.json
+    -C "$SYNO_DOCKER_SCRIPT_PATH" start-stop-status)
+  if [ -f "${SYNO_DOCKER_JSON_PATH}/docker-default.profile.synology-docker-managed" ]; then
+    [ -f "${SYNO_DOCKER_JSON_PATH}/docker-default.profile" ] || terminate "Managed AppArmor profile is missing"
+    backup_sources+=(-C "$SYNO_DOCKER_JSON_PATH" docker-default.profile docker-default.profile.synology-docker-managed)
+  fi
+  backup_temp=$(mktemp "${backup_file}.XXXXXX") || terminate "Could not create temporary backup"
+  if ! tar -czvf "$backup_temp" "${backup_sources[@]}" || ! tar -tzf "$backup_temp" >/dev/null; then
+    rm -f "$backup_temp"
+    terminate "Could not create a complete Docker backup"
+  fi
+  if ! mv "$backup_temp" "$backup_file"; then
+    rm -f "$backup_temp"
+    terminate "Could not finalize Docker backup"
   fi
 }
 
@@ -1113,21 +1137,20 @@ execute_extract_bin() {
     fi
 
     cd "${temp_dir}" || terminate "Temp directory does not exist"
-    tar -zxvf "${download_dir}/${target_docker_bin}"
-    if [ ! -d "docker" ] ; then
-      terminate "Files could not be extracted from archive"
+    tar -zxvf "${download_dir}/${target_docker_bin}" || terminate "Could not extract Docker archive"
+    if [ ! -f "docker/docker" ] || [ ! -f "docker/dockerd" ]; then
+      terminate "Docker binaries could not be extracted from archive"
     fi
 
-    # runc 1.3.3-1.3.x and 1.4.0 fail on DSM 5.x kernels ("unsafe procfs detected ... proc/self/setgroups: no such
-    # file or directory"). Fixed upstream in runc 1.4.1 / 1.5.0, so only override the bundled runc when it's affected.
+    # Only replace bundled runc versions known to fail on DSM 5.x kernels.
     bundled_runc=$("${temp_dir}/docker/runc" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     if uname -r | grep -q '^5\.' && echo "${bundled_runc}" | grep -Eq '^1\.(3\.([3-9]|[1-9][0-9])|4\.0)$'; then
       echo "Bundled runc ${bundled_runc} is incompatible with Kernel v5, downloading / pinning runc ${PINNED_RUNC_VERSION}."
-      response=$(curl -L "${PINNED_RUNC}" --write-out '%{http_code}' -o "${temp_dir}/docker/runc")
-      if [ "${response}" != 200 ] ; then
+      response=$(curl_https_update -L "${PINNED_RUNC}" --write-out '%{http_code}' -o "${temp_dir}/docker/runc")
+      if [ "${response}" != 200 ]; then
         terminate "runc binary could not be downloaded"
       fi
-      chmod +x "${temp_dir}/docker/runc"
+      chmod +x "${temp_dir}/docker/runc" || terminate "Could not set runc executable permission"
       echo "Target runc version: ${PINNED_RUNC_VERSION} (pinned, replaces bundled ${bundled_runc:-Unknown})"
     else
       echo "Target runc version: ${bundled_runc:-Unknown} (bundled)"
@@ -1154,8 +1177,9 @@ execute_extract_backup() {
   fi
 
   cd "${temp_dir}" || terminate "Temp directory does not exist"
-  tar -zxvf "${backup_dir}/${docker_backup_filename}"
-  mv bin docker
+  tar -tzf "${backup_dir}/${docker_backup_filename}" >/dev/null || terminate "Backup archive is invalid"
+  tar -zxvf "${backup_dir}/${docker_backup_filename}" || terminate "Could not extract Docker backup"
+  mv bin docker || terminate "Docker binaries could not be extracted from archive"
 
   if [ ! -d "docker" ] ; then
     terminate "Docker binaries could not be extracted from archive"
@@ -1165,6 +1189,12 @@ execute_extract_backup() {
   fi
   if [ ! -f "dockerd.json" ] ; then
     terminate "Log driver configuration could not be extracted from archive"
+  fi
+  if [ ! -f "start-stop-status" ]; then
+    terminate "Docker start-stop-status script could not be extracted from archive"
+  fi
+  if [ -f "docker-default.profile.synology-docker-managed" ] && [ ! -f "docker-default.profile" ]; then
+    terminate "Managed AppArmor profile could not be extracted from archive"
   fi
 }
 
@@ -1215,15 +1245,19 @@ execute_download_compose() {
 execute_install_bin() {
   print_status "Installing binaries"
   if [ "${stage}" = 'false' ] ; then
+    if [ "$skip_docker_update" = 'true' ] && [ "$skip_compose_update" = 'true' ]; then
+      echo "Skipping binary installation in TARGET mode"
+      return 0
+    fi
     if [ "${skip_docker_update}" = 'false' ] ; then
-      cp "${temp_dir}"/docker/* "${SYNO_DOCKER_BIN}"/
+      cp "${temp_dir}"/docker/* "${SYNO_DOCKER_BIN}"/ || terminate "Could not install Docker Engine binaries"
     fi
     if [ "${skip_compose_update}" = 'false' ] ; then
-      cp "${download_dir}"/docker-compose "${SYNO_DOCKER_BIN}"/docker-compose
+      cp "${download_dir}"/docker-compose "${SYNO_DOCKER_BIN}"/docker-compose || terminate "Could not install Docker Compose binary"
     fi
-    chown root:root "${SYNO_DOCKER_BIN}"/*
-    chmod +x "${SYNO_DOCKER_BIN}"/*
-    mkdir -p /var/lib/docker/volumes  # creates folder to improve compatability for some containers
+    chown root:root "${SYNO_DOCKER_BIN}"/* || terminate "Could not set Docker binary ownership"
+    chmod +x "${SYNO_DOCKER_BIN}"/* || terminate "Could not set Docker binary permissions"
+    mkdir -p /var/lib/docker/volumes || terminate "Could not create Docker volumes directory"  # creates folder to improve compatability for some containers
   else
     echo "Skipping installation in STAGE mode"
   fi
@@ -1246,17 +1280,23 @@ execute_restore_bin() {
   if [ "${stage}" = 'false' ] ; then
     if [ "${skip_docker_update}" = 'true' ] && [ "${skip_compose_update}" = 'true' ] ; then
       echo "Skipping restore of binaries"
+      return 0
     fi
     # copy Docker Engine binaries
     if [ "${skip_docker_update}" = 'false' ] ; then
-      find "${temp_dir}"/docker/ -type f \( ! -name docker-compose \) -print -exec cp -rpf '{}' "${SYNO_DOCKER_BIN}"/ ";"
+      ( set -o pipefail
+        find "${temp_dir}/docker" -type f ! -name docker-compose -print0 |
+          while IFS= read -r -d '' binary; do
+            cp -rpf "$binary" "${SYNO_DOCKER_BIN}/" || exit 1
+          done
+      ) || terminate "Could not restore Docker Engine binaries"
     fi
     # copy Docker Compose
     if [ "${skip_compose_update}" = 'false' ] ; then
-      cp "${temp_dir}"/docker/docker-compose "${SYNO_DOCKER_BIN}"/
+      cp "${temp_dir}"/docker/docker-compose "${SYNO_DOCKER_BIN}"/ || terminate "Could not restore Docker Compose binary"
     fi
-    chown root:root "${SYNO_DOCKER_BIN}"/*
-    chmod +x "${SYNO_DOCKER_BIN}"/*
+    chown root:root "${SYNO_DOCKER_BIN}"/* || terminate "Could not set Docker binary ownership"
+    chmod +x "${SYNO_DOCKER_BIN}"/* || terminate "Could not set Docker binary permissions"
   else
     echo "Skipping restore in STAGE mode"
   fi
@@ -1272,11 +1312,14 @@ execute_restore_bin() {
 #   Updated Docker daemon configuration.
 #======================================================================================================================
 execute_update_log() {
+  if [ "${skip_driver_update}" = 'true' ] ; then
+    return
+  fi
   print_status "Configuring log driver"
-  if [ "${stage}" = 'false' ] && [ "${skip_driver_update}" = 'false' ] ; then
-    "${SCRIPT_DIR}/syno_docker_switch_logger.sh" "${SYNO_DOCKER_JSON}"
+  if [ "${stage}" = 'false' ] ; then
+    "${SCRIPT_DIR}/syno_docker_switch_logger.sh" "${SYNO_DOCKER_JSON}" || terminate "Could not update Docker daemon log driver"
   else
-    echo "Skipping configuration in STAGE mode or TARGET mode"
+    echo "Skipping configuration in STAGE mode"
   fi
 }
 
@@ -1296,10 +1339,24 @@ execute_update_log() {
 # Outputs:
 #   Updated start-stop-status script.
 #======================================================================================================================
+validate_forwarding_anchor() {
+  if [ "$command" != 'only_script' ] && [ "$skip_docker_update" = 'true' ]; then
+    return 0
+  fi
+  if [ "$stage" = 'false' ] && ! grep -qE '^[[:space:]]*[$]DockerUpdaterBin postdaemonup[[:space:]]*$' "$SYNO_DOCKER_SCRIPT"; then
+    terminate "Cannot find Docker postdaemonup anchor in $SYNO_DOCKER_SCRIPT"
+  fi
+}
+
 execute_update_script() {
   print_status "Enabling IP forwarding"
+  if [ "$command" != 'only_script' ] && [ "$skip_docker_update" = 'true' ]; then
+    echo "Skipping forwarding configuration in TARGET mode"
+    return 0
+  fi
   if [ "${stage}" = 'false' ]; then
     # File to edit
+    local file match script_temp
     file="${SYNO_DOCKER_SCRIPT}"
 
     remove_legacy_module_lines "${file}"
@@ -1307,23 +1364,32 @@ execute_update_script() {
     # Verify the insertion anchor exists before touching the file, so a missing anchor leaves
     # the file unmodified.
     match="^[[:space:]]*[$]DockerUpdaterBin postdaemonup[[:space:]]*$"
-    if grep -qE "${match}" "${file}"; then
-      # Remove any previously-inserted forwarding block, wherever it landed. Older versions of this script (and
-      # fix_ipforward.sh / switch_forward.sh) inserted it before 'start_docker_daemon'. Only the iptables FORWARD lines
-      # (and the comment directly above them) are removed; the identically-commented insmod block added by
-      # install_iptables_modules.sh is left untouched.
-      sed -i '/^[[:space:]]*iptables -C FORWARD -j DOCKER-FORWARD/d' "${file}"
-      sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "${file}"
-      sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -P FORWARD ACCEPT/d}' "${file}"
-      sed -i '/^[[:space:]]*iptables -P FORWARD ACCEPT[[:space:]]*$/d' "${file}"
-
-      # Insert only after the daemon is confirmed up.
-      sed -i "/${match}/i\\${SYNO_DOCKER_SCRIPT_FORWARDING}" "${file}"
-      echo "Added IP forwarding configuration to ${file} (post daemon start)."
-    else
-      echo "WARNING: anchor '\$DockerUpdaterBin postdaemonup' not found in ${file}."
-      echo "         File left unmodified -- check the file manually."
+    validate_forwarding_anchor
+    script_temp=$(mktemp "${file}.XXXXXX") || terminate "Could not create temporary Docker startup script"
+    if ! cp -p "$file" "$script_temp"; then
+      rm -f "$script_temp"
+      terminate "Could not copy Docker startup script"
     fi
+    # Remove any previously-inserted forwarding block, wherever it landed. Older versions of this script (and
+    # fix_ipforward.sh / switch_forward.sh) inserted it before 'start_docker_daemon'. Only the iptables FORWARD lines
+    # (and the comment directly above them) are removed; the identically-commented insmod block added by
+    # install_iptables_modules.sh is left untouched.
+    if ! sed -i '/^[[:space:]]*iptables -C FORWARD -j DOCKER-FORWARD/d' "$script_temp" ||
+      ! sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "$script_temp" ||
+      ! sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -P FORWARD ACCEPT/d}' "$script_temp" ||
+      ! sed -i '/^[[:space:]]*iptables -P FORWARD ACCEPT[[:space:]]*$/d' "$script_temp" ||
+      ! sed -i "/${match}/i\\${SYNO_DOCKER_SCRIPT_FORWARDING}" "$script_temp" ||
+      ! grep -q 'iptables -C FORWARD -j DOCKER-FORWARD' "$script_temp"; then
+      rm -f "$script_temp"
+      terminate "Could not update Docker startup script"
+    fi
+
+    # Insert only after the daemon is confirmed up.
+    if ! mv "$script_temp" "$file"; then
+      rm -f "$script_temp"
+      terminate "Could not replace Docker startup script"
+    fi
+    echo "Added IP forwarding configuration to ${file} (post daemon start)."
   else
     echo "Skipping configuration in STAGE mode"
   fi
@@ -1342,7 +1408,7 @@ execute_update_script() {
 execute_restore_log() {
   print_status "Restoring log driver"
   if [ "${stage}" = 'false' ] && [ "${skip_driver_update}" = 'false' ] ; then
-    cp "${temp_dir}"/dockerd.json "${SYNO_DOCKER_JSON}"
+    cp "${temp_dir}"/dockerd.json "${SYNO_DOCKER_JSON}" || terminate "Could not restore Docker daemon configuration"
   else
     echo "Skipping restoring in STAGE mode or TARGET mode"
   fi
@@ -1382,7 +1448,7 @@ execute_start_syno() {
   print_status "Starting Docker service - May take a while. "
   echo "   - timeout set to ${SYNO_SERVICE_START_TIMEOUT} based on ${RUNNING_CONTAINERS} active containers"
 
-  if [ "${stage}" = 'true' ] ; then
+  if [ "${stage}" = 'true' ]; then
     echo "Skipping Docker service control in STAGE mode"
     return
   fi
@@ -1393,7 +1459,6 @@ execute_start_syno() {
     fail_start "${SYNO_DOCKER_SERV_NAME} is still stopping, so it cannot be started yet. This is a problem with the" \
       "stop, not the start: wait for it to finish (or stop the stuck container), then run" \
       "'$(syno_start_cmd)'"
-    return
   fi
 
   syno_ctl start
@@ -1406,21 +1471,19 @@ execute_start_syno() {
     else
       fail_start "Docker failed to start (status: ${syno_status})"
     fi
+  else
+    service_stopped='false'
   fi
 }
 
 #======================================================================================================================
-# Reports a failed start: terminates, or only prints the error when the operation is forced.
+# Reports a failed start and exits non-zero even when the operation was forced.
 #======================================================================================================================
 # Arguments:
 #   $@ - Error message
 #======================================================================================================================
 fail_start() {
-  if [ "${force}" != 'true' ] ; then
-    terminate "$*"
-  else
-    echo "ERROR: $*"
-  fi
+  terminate "$*"
 }
 
 #======================================================================================================================
@@ -1537,10 +1600,24 @@ setup_fuse_overlayfs() {
 #   Removed temp folder.
 #======================================================================================================================
 execute_clean() {
-  if [ "$1" != 'silent' ] ; then
-    print_status "Cleaning the temp folder"
+  if [ -n "$temp_dir" ]; then
+    if [ "$1" != 'silent' ]; then
+      print_status "Cleaning the temp folder"
+    fi
+    rm -rf "$temp_dir" || terminate "Could not clean temporary files"
+    temp_dir=''
   fi
-  rm -rf "${temp_dir}"
+}
+
+cleanup_on_exit() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ "$service_stopped" = 'true' ]; then
+    printf 'Docker service may be stopped. Backup: %s/%s\n' "$backup_dir" "$docker_backup_filename" >&2
+  fi
+  if [ "$preserve_stage" != 'true' ] && [ -n "$temp_dir" ]; then
+    rm -rf "$temp_dir" || { printf 'Could not clean temporary files: %s\n' "$temp_dir" >&2; status=1; }
+  fi
+  return "$status"
 }
 
 #======================================================================================================================
@@ -1548,8 +1625,8 @@ execute_clean() {
 #======================================================================================================================
 
 #======================================================================================================================
-# Entrypoint for the script. It initializes the environment variables, generates the DNS plugin configuration, and
-# runs the certbot to issue/renew the certificate.
+# Entrypoint for the script. It validates the environment and arguments, then runs the selected Docker update,
+# backup, download, restore, or validation workflow.
 #======================================================================================================================
 main() {
   # Show header
@@ -1604,16 +1681,15 @@ main() {
         ;;
       -p | --path )
         shift
-        backup_dir="$1"
-        validate_provided_backup_path "Path not specified" "Path not found" \
-          "Path is equal to temp directory, please specify a different path"
+        backup_dir="${1:-}"
+        validate_provided_backup_path "Path not specified" "Path not found"
         ;;
       -s | --stage )
         stage='true'
         ;;
       -t | --target )
         shift
-        target="$1"
+        target="${1:-}"
         validate_target "Invalid target"
         ;;
       backup | restore | update | logger | validate | only_script | start | stop )
@@ -1622,7 +1698,7 @@ main() {
       download | install )
         command="$1"
         shift
-        download_dir="$1"
+        download_dir="${1:-}"
         validate_provided_download_path "Path not specified" "Path not found"
         ;;
       * )
@@ -1703,8 +1779,8 @@ main() {
       detect_current_versions
       validate_syno_tools
       execute_prepare
-      execute_stop_syno
       execute_backup
+      execute_stop_syno
       execute_update_log
       execute_start_syno
       ;;

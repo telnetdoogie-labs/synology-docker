@@ -279,7 +279,16 @@ validate_db_logger() {
   if [ "${#db_containers[@]}" -gt 0 ]; then
     printf '%s\n' "Containers still using the 'db' logger:" >&2
     printf '  %s\n' "${db_containers[@]##/}" >&2
-    printf '%s\n' "Recreate them with a supported logging driver before updating Docker," >&2
+    if [ "$(jq -r '.["log-driver"] // empty' "${SYNO_DOCKER_JSON}" 2>/dev/null)" = 'db' ]; then
+      printf '%s\n' "The daemon default log driver is still 'db'; update it first, or recreated" >&2
+      printf '%s\n' "containers inherit it again:" >&2
+      printf '  sudo %q logger\n' "${SCRIPT_DIR}/syno_docker_update.sh" >&2
+    fi
+    printf '%s\n' "Review the listed containers and recreate them:" >&2
+    printf '  sudo %q\n' "${SCRIPT_DIR}/syno_docker_list_containers.sh" >&2
+    printf '%s\n' "or export them to Compose projects with the migration tool:" >&2
+    printf '%s\n' "  git clone https://github.com/gundestrup/stateful-docker-migration-flow" >&2
+    printf '%s\n' "  cd stateful-docker-migration-flow && sudo ./sdmf" >&2
     printf '%s\n' "or run again with --force to skip this check." >&2
     terminate "Resolve the 'db' logger state before updating Docker"
   fi
@@ -635,6 +644,7 @@ define_update() {
   [ "${skip_docker_update}" = 'true' ] && total_steps=$((total_steps-2))  # no Docker download or extract step
   [ "${skip_compose_update}" = 'true' ] && total_steps=$((total_steps-1))  # no Compose download step
 
+  # A non-semver installed version cannot be compared, so this downgrade guard skips it
   if [ "${skip_docker_update}" = 'false' ] && is_semver "$docker_version" &&
     version_is_newer "$docker_version" "$target_docker_version" &&
     { [ "$force" != 'true' ] || [ "$target_docker_explicit" != 'true' ]; }; then

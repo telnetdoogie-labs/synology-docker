@@ -560,6 +560,9 @@ docker() {
   fi
   return 1
 }
+# The logger-switch tests above rewrote this file; reset the daemon default to 'db'
+jq '.["log-driver"] = "db"' "$SYNO_DOCKER_JSON" > "${SYNO_DOCKER_JSON}.tmp" &&
+  mv "${SYNO_DOCKER_JSON}.tmp" "$SYNO_DOCKER_JSON"
 if db_blocked_output=$(validate_db_logger 2>&1); then
   printf 'db-logger containers were not blocked\n' >&2
   exit 1
@@ -567,7 +570,20 @@ fi
 [[ "$db_blocked_output" == *'container-one'* ]]
 [[ "$db_blocked_output" != *'container-two'* ]]
 [[ "$db_blocked_output" == *'--force'* ]]
-[[ "$db_blocked_output" != *'http://'* && "$db_blocked_output" != *'https://'* ]]
+[[ "$db_blocked_output" == *'syno_docker_list_containers.sh'* ]]
+[[ "$db_blocked_output" == *'stateful-docker-migration-flow'* ]]
+# A 'db' daemon default must be flagged: recreated containers would inherit it
+[[ "$db_blocked_output" == *'syno_docker_update.sh logger'* ]]
+jq '.["log-driver"] = "local"' "$SYNO_DOCKER_JSON" > "${SYNO_DOCKER_JSON}.tmp" &&
+  mv "${SYNO_DOCKER_JSON}.tmp" "$SYNO_DOCKER_JSON"
+if db_blocked_output=$(validate_db_logger 2>&1); then
+  printf 'db-logger containers were not blocked\n' >&2
+  exit 1
+fi
+[[ "$db_blocked_output" == *'container-one'* ]]
+[[ "$db_blocked_output" != *'syno_docker_update.sh logger'* ]]
+jq '.["log-driver"] = "db"' "$SYNO_DOCKER_JSON" > "${SYNO_DOCKER_JSON}.tmp" &&
+  mv "${SYNO_DOCKER_JSON}.tmp" "$SYNO_DOCKER_JSON"
 force='true'
 db_forced_output=$(validate_db_logger 2>&1)
 [[ -z "$db_forced_output" ]]

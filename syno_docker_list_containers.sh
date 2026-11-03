@@ -22,7 +22,7 @@ sorted_containers_info=()
 while IFS= read -r info; do
   [ -n "$info" ] || continue
   sorted_containers_info+=("$info")
-done < <(printf "%s\n" "${containers_info[@]}" | sort -t " " -k 2)
+done < <(printf "%s\n" ${containers_info[@]+"${containers_info[@]}"} | sort -t " " -k 2)
 # Original with -u - this unfortunately hides portainer containers.
 # IFS=$'\n' sorted_containers_info=($(printf "%s\n" "${containers_info[@]}" | sort -t -u " " -k 2))
 
@@ -30,7 +30,7 @@ done < <(printf "%s\n" "${containers_info[@]}" | sort -t " " -k 2)
 max_container_length=0
 max_location_length=0
 max_logger_length=7
-for info in "${sorted_containers_info[@]}"; do
+for info in ${sorted_containers_info[@]+"${sorted_containers_info[@]}"}; do
   container=${info%% *}
   logger=${info##* }
   location=${info#* }
@@ -51,7 +51,7 @@ printf "%-${max_container_length}s  %-${max_location_length}s %-${max_logger_len
 
 docker_managed=()
 # Print the sorted container information
-for info in "${sorted_containers_info[@]}"; do
+for info in ${sorted_containers_info[@]+"${sorted_containers_info[@]}"}; do
   container=${info%% *}
   logger=${info##* }
   location=${info#* }

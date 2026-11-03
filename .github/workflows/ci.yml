@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build test image
         run: docker build -t synology-docker-tests -f tests/Dockerfile .
@@ -28,14 +30,28 @@ jobs:
       - name: Run regression tests
         run: docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests
 
+      - name: DSM 6 bash compatibility
+        # DSM 6 ships bash 4.3, where "${arr[@]}" on an empty array is a
+        # fatal unbound-variable error under set -u. Exercise the container
+        # listing with a container-less docker stub to cover that path.
+        run: |
+          mkdir -p test-stub
+          printf '#!/bin/sh\nexit 0\n' > test-stub/docker
+          chmod +x test-stub/docker
+          docker run --rm -e "PATH=/stub:/usr/local/bin:/usr/bin:/bin" \
+            -v "$PWD/test-stub:/stub:ro" -v "$PWD:/mnt:ro" -w /mnt \
+            bash:4.3 bash ./syno_docker_list_containers.sh
+
   shell-analysis:
     name: ShellCheck
     runs-on: ubuntu-latest
-    container:
-      image: koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d # v0.11.0
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run ShellCheck
-        run: shellcheck -x ./*.sh tests/*.sh
+        # koalaman/shellcheck is a scratch image (no shell), so it runs as a
+        # step container rather than a job container.
+        run: docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d -x ./*.sh tests/*.sh

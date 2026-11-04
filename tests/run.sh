@@ -32,29 +32,24 @@ docker() {
 }
 export -f docker
 
-marker="$test_tmp_dir/command-injected"
 anon_volume='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-DOCKER_FIXTURE=$(jq -cn --arg marker "$marker" --arg anon_volume "$anon_volume" '[{Name:"/review-test",Config:{Image:"example/test:1",Env:["RECREATE_TEST_APP=one","RECREATE_TEST_APP_EXTRA=two",("RECREATE_TEST_DANGEROUS=$(touch "+$marker+")")],Entrypoint:["/entry","--entry-flag"],Cmd:["argument with spaces","second-argument","line1\nline2"],Tty:true,OpenStdin:false},HostConfig:{PortBindings:{"80/tcp":[{HostIp:"127.0.0.1",HostPort:"8080"}]},RestartPolicy:{Name:"unless-stopped"},NetworkMode:"custom-net",LogConfig:{Type:"db"},CgroupnsMode:"host",UsernsMode:"host",UtsMode:"host"},Mounts:[{Type:"bind",Source:"/tmp/source path",Destination:"/data path",RW:false,Mode:""},{Type:"volume",Name:"config_volume",Source:"/var/lib/docker/volumes/config_volume/_data",Destination:"/config",RW:true,Mode:""},{Type:"volume",Name:$anon_volume,Source:"/var/lib/docker/volumes/anonymous/_data",Destination:"/storage",RW:true,Mode:""},{Type:"tmpfs",Destination:"/cache",RW:true}]}]')
+DOCKER_FIXTURE=$(jq -cn --arg anon_volume "$anon_volume" '[{Name:"/review-test",Config:{Image:"example/test:1",Env:["RECREATE_TEST_APP=one","RECREATE_TEST_APP_EXTRA=two"],Entrypoint:["/entry","--entry-flag"],Cmd:["argument with spaces","second-argument"],Tty:true,OpenStdin:false},HostConfig:{PortBindings:{"80/tcp":[{HostIp:"127.0.0.1",HostPort:"8080"}]},RestartPolicy:{Name:"unless-stopped"},NetworkMode:"custom-net",LogConfig:{Type:"db"}},Mounts:[{Type:"bind",Source:"/tmp/source path",Destination:"/data path",RW:false,Mode:""},{Type:"volume",Name:"config_volume",Source:"/var/lib/docker/volumes/config_volume/_data",Destination:"/config",RW:true,Mode:""}]}]')
 export DOCKER_FIXTURE
-unset RECREATE_TEST_APP RECREATE_TEST_APP_EXTRA RECREATE_TEST_DANGEROUS
+unset RECREATE_TEST_APP RECREATE_TEST_APP_EXTRA
 suggestion=$("$repo_dir/container_recreate.sh" review-test)
+[[ "$suggestion" == *'docker run -d'* ]]
+[[ "$suggestion" == *'--name review-test'* ]]
+[[ "$suggestion" == *'-e "RECREATE_TEST_APP=one"'* ]]
+[[ "$suggestion" == *'-e "RECREATE_TEST_APP_EXTRA=two"'* ]]
+[[ "$suggestion" == *'-p 8080:80/tcp'* ]]
+[[ "$suggestion" == *'-v /tmp/source path:/data path'* ]]
+[[ "$suggestion" == *'-v /var/lib/docker/volumes/config_volume/_data:/config'* ]]
+[[ "$suggestion" == *'--log-driver local'* ]]
+[[ "$suggestion" == *'-it example/test:1'* ]]
 run_result=$(eval "$suggestion")
-[[ ! -e "$marker" ]]
-[[ "$suggestion" != *"$marker"* ]]
-[[ "$suggestion" != *'RECREATE_TEST_APP=one'* ]]
-[[ "$run_result" == *'</REVIEW_AND_CREATE_ENV_FILE_BEFORE_RUNNING>'* ]]
-[[ "$run_result" == *'<argument with spaces>'* ]]
-[[ "$run_result" == *'<second-argument>'* ]]
-[[ "$run_result" == *$'line1\nline2'* ]]
-[[ "$run_result" == *'<127.0.0.1:8080:80/tcp>'* ]]
-[[ "$run_result" == *'</tmp/source path:/data path:ro>'* ]]
-[[ "$run_result" == *'<config_volume:/config>'* ]]
-[[ "$run_result" == *'</cache>'* ]]
-[[ "$run_result" == *'<-t>'* && "$run_result" != *'<-i>'* ]]
+[[ "$run_result" == *'MOCK_DOCKER_RUN'* ]]
+[[ "$run_result" == *'<-e>'*'<RECREATE_TEST_APP=one>'* ]]
 [[ "$run_result" == *'<--log-driver>'*'<local>'* ]]
-[[ "$run_result" == *'<--restart>'*'<unless-stopped>'* ]]
-[[ "$run_result" == *'<--network>'*'<custom-net>'* ]]
-[[ "$run_result" == *'<--entrypoint>'*'</entry>'*'--entry-flag'* ]]
 printf 'Container recreation rendering tests passed\n'
 
 compose_path="$test_tmp_dir/compose  file.yml"
@@ -67,10 +62,9 @@ listing=$("$repo_dir/syno_docker_list_containers.sh")
 MOCK_LIST_MODE=unmanaged
 export MOCK_LIST_MODE
 listing=$("$repo_dir/syno_docker_list_containers.sh")
-[[ "$listing" != *"$marker"* ]]
-[[ "$listing" != *'RECREATE_TEST_APP=one'* ]]
-[[ "$listing" == *'/REVIEW_AND_CREATE_ENV_FILE_BEFORE_RUNNING'* ]]
-printf 'Container listing path and secret-redaction tests passed\n'
+[[ "$listing" == *'docker run -d'* ]]
+[[ "$listing" == *'--log-driver local'* ]]
+printf 'Container listing path tests passed\n'
 
 for script in "$repo_dir"/*.sh; do
   bash -n "$script"

@@ -18,6 +18,9 @@ docker() {
       ;;
     ps)
       [[ "${2:-}" = '-aq' ]] || return 2
+      if [[ "${MOCK_LIST_MODE:-}" = 'ps_fail' ]]; then
+        return 1
+      fi
       printf '%s\n' "${MOCK_DOCKER_IDS:-}"
       ;;
     run)
@@ -64,6 +67,19 @@ export MOCK_LIST_MODE
 listing=$("$repo_dir/syno_docker_list_containers.sh")
 [[ "$listing" == *'docker run -d'* ]]
 [[ "$listing" == *'--log-driver local'* ]]
+MOCK_LIST_MODE=empty
+MOCK_DOCKER_IDS=''
+export MOCK_LIST_MODE MOCK_DOCKER_IDS
+listing=$("$repo_dir/syno_docker_list_containers.sh")
+[[ "$listing" == *'Container'* && "$listing" != *'docker run'* ]]
+MOCK_LIST_MODE=ps_fail
+export MOCK_LIST_MODE
+if listing=$("$repo_dir/syno_docker_list_containers.sh" 2>&1); then
+  printf 'Failed Docker inventory was reported as empty\n' >&2
+  exit 1
+fi
+[[ "$listing" == *'Could not list Docker containers'* ]]
+[[ "$listing" != *'Compose_Location'* ]]
 printf 'Container listing path tests passed\n'
 
 for script in "$repo_dir"/*.sh; do

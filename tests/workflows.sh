@@ -571,9 +571,33 @@ fi
 [[ "$db_blocked_output" != *'container-two'* ]]
 [[ "$db_blocked_output" == *'--force'* ]]
 [[ "$db_blocked_output" == *'syno_docker_list_containers.sh'* ]]
-[[ "$db_blocked_output" == *'stateful-docker-migration-flow'* ]]
+[[ "$db_blocked_output" == *'git clone https://github.com/gundestrup/stateful-docker-migration-flow'* ]]
+[[ "$db_blocked_output" == *'cd stateful-docker-migration-flow && sudo ./sdmf'* ]]
+[[ "$db_blocked_output" == *'Review the listed containers and recreate them:'* ]]
 # A 'db' daemon default must be flagged: recreated containers would inherit it
 [[ "$db_blocked_output" == *'syno_docker_update.sh logger'* ]]
+space_dir="$test_tmp_dir/script directory"
+mkdir -p "$space_dir"
+cp "$repo_dir/syno_docker_update.sh" "$space_dir/syno_docker_update.sh"
+if spaced_output=$(bash -c '
+  docker() {
+    case "${1:-}:${2:-}" in
+      ps:-q) return 0 ;;
+      ps:-aq) printf "container-one\n" ;;
+      inspect:container-one) printf "/container-one db\n" ;;
+      *) return 1 ;;
+    esac
+  }
+  source "$1"
+  validate_db_logger
+' _ "$space_dir/syno_docker_update.sh" 2>&1); then
+  printf 'db-logger containers were not blocked from a spaced script path\n' >&2
+  exit 1
+fi
+printf -v logger_hint '  sudo %q logger' "$space_dir/syno_docker_update.sh"
+printf -v listing_hint '  sudo %q' "$space_dir/syno_docker_list_containers.sh"
+grep -Fqx -- "$logger_hint" <<< "$spaced_output"
+grep -Fqx -- "$listing_hint" <<< "$spaced_output"
 jq '.["log-driver"] = "local"' "$SYNO_DOCKER_JSON" > "${SYNO_DOCKER_JSON}.tmp" &&
   mv "${SYNO_DOCKER_JSON}.tmp" "$SYNO_DOCKER_JSON"
 if db_blocked_output=$(validate_db_logger 2>&1); then
@@ -582,6 +606,7 @@ if db_blocked_output=$(validate_db_logger 2>&1); then
 fi
 [[ "$db_blocked_output" == *'container-one'* ]]
 [[ "$db_blocked_output" != *'syno_docker_update.sh logger'* ]]
+[[ "$db_blocked_output" == *'Review the listed containers and recreate them:'* ]]
 jq '.["log-driver"] = "db"' "$SYNO_DOCKER_JSON" > "${SYNO_DOCKER_JSON}.tmp" &&
   mv "${SYNO_DOCKER_JSON}.tmp" "$SYNO_DOCKER_JSON"
 force='true'

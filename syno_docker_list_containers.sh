@@ -10,12 +10,16 @@ readonly MAYBE_PORTAINER="!---maybe_managed_by_portainer---!"
 # Stopped containers are included so containers stuck on the removed 'db'
 # logger remain visible.
 containers_info=()
+if ! container_ids=$(docker ps -aq); then
+  printf 'Could not list Docker containers; check that the Docker daemon is available.\n' >&2
+  exit 1
+fi
 while IFS= read -r c; do
   [ -n "$c" ] || continue
   container_info=$(docker inspect "$c" --format "{{.Name}} {{if index .Config.Labels \"com.docker.compose.project.config_files\"}}{{index .Config.Labels \"com.docker.compose.project.config_files\"}}{{else}}${NOT_COMPOSE}{{end}} {{.HostConfig.LogConfig.Type}}")
   container_info=${container_info#/}
   containers_info+=("$container_info")
-done < <(docker ps -aq)
+done <<< "$container_ids"
 
 # Sort the array based on the second field (compose location)
 sorted_containers_info=()

@@ -11,6 +11,10 @@ debug() {
   fi
 }
 
+quote_arg() {
+  printf '%q' "$1"
+}
+
 # Check if a container ID or name was provided
 if [ -z "$1" ]; then
   echo "Usage: $0 <container_name_or_id>"
@@ -50,47 +54,42 @@ docker_command+=("docker run -d \\")
 
 # Add name only if it exists
 if [ -n "$container_name" ]; then
-  docker_command+=("--name $container_name")
+  docker_command+=("--name $(quote_arg "$container_name")")
 fi
 
 debug "environment variables (filtered)..."
-# Format the remaining environment variables for docker run
-for var in $filtered_env_vars; do
-  value=$(echo "$container_info" | jq -r --arg var "$var" '.[0].Config.Env[]? | select(startswith($var + "="))')
-  if [ -n "$value" ]; then
-    docker_command+=("-e \"$value\"")
-  fi
-done
+# Require an operator-supplied file rather than printing environment values.
+if [ -n "$filtered_env_vars" ]; then
+  docker_command+=("--env-file \"\${RECREATE_ENV_FILE:?Set RECREATE_ENV_FILE to a private env file}\"")
+fi
 
 debug "port mappings..."
 # Extract port mappings and add each port to the array individually
-ports=$(echo "$container_info" | jq -r '.[0].HostConfig.PortBindings // {} | to_entries[]? | "-p " + .value[0].HostPort + ":" + .key')
-if [ -n "$ports" ]; then
-  # Add each port as a separate entry
-  while IFS= read -r port; do
-    docker_command+=("$port")
-  done <<< "$ports"
-fi
+while IFS= read -r -d '' port; do
+  docker_command+=("-p $(quote_arg "$port")")
+done < <(jq -j '.[0].HostConfig.PortBindings // {} | to_entries[]? | (.value[0].HostPort + ":" + .key + "\u0000")' <<< "$container_info")
 
 debug "volumes..."
 # Extract volumes and add each volume to the array individually
-volumes=$(echo "$container_info" | jq -r '(.[0].Mounts // [])[] | "-v " + .Source + ":" + .Destination')
-if [ -n "$volumes" ]; then
-  # Add each volume as a separate entry
-  while IFS= read -r volume; do
-    docker_command+=("$volume")
-  done <<< "$volumes"
-fi
+while IFS= read -r -d '' volume; do
+  docker_command+=("-v $(quote_arg "$volume")")
+done < <(jq -j '(.[0].Mounts // [])[] | (.Source + ":" + .Destination + "\u0000")' <<< "$container_info")
 
 debug "cmd..."
 # Extract the command used inside the container
-cmd=$(echo "$container_info" | jq -r '.[0].Config.Cmd // [] | join(" ")')
 
 # Add the image and command
 docker_command+=("--log-driver local")
-docker_command+=("-it $image $cmd")
+docker_line="-it $(quote_arg "$image")"
+while IFS= read -r -d '' arg; do
+  docker_line+=" $(quote_arg "$arg")"
+done < <(jq -j '.[0].Config.Cmd[]? | . + "\u0000"' <<< "$container_info")
+docker_command+=("$docker_line")
 
 # Output the final docker command with a backslash at the end of each line except the last
+if [ -n "$filtered_env_vars" ]; then
+  echo '# Set RECREATE_ENV_FILE to a private file with the required environment values before running.'
+fi
 echo "${docker_command[0]}"
 for ((i = 1; i < ${#docker_command[@]}; i++)); do
   if [ $i -lt $((${#docker_command[@]} - 1)) ]; then

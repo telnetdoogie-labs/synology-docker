@@ -123,7 +123,7 @@ For a **non‑Compose** container, `syno_docker_list_containers.sh` prints a bes
 
 Re‑run `syno_docker_list_containers.sh` until **everything** says `local`. The listing includes stopped containers so `db`-logger failures remain visible.
 
-> Containers created via `docker run` will show a _best‑guess_ recreate command, including environment values inline. Review it before running — for anything sensitive or non‑trivial, prefer the migration tool above.
+> Containers created via `docker run` will show a _best‑guess_ recreate command, not a complete reconstruction. Arguments are shell-quoted; if environment values are needed, the hint requires `RECREATE_ENV_FILE` instead of printing them. Create an owner-only env file with the required `NAME=value` entries, set `RECREATE_ENV_FILE` to its path, and review the command before running it. Keep the file out of version control. For sensitive or non-trivial containers, prefer the migration tool above.
 
 ### Step 3: Upgrade Docker & Compose
 

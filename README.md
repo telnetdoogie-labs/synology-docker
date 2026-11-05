@@ -226,7 +226,7 @@ Run one focused case by its file name without `.sh` (for example, when changing 
 docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests bash tests/run.sh backup_creates_private_archive
 ```
 
-`tests/run.sh` discovers behavior-named scripts in `tests/cases/`. Each file tests one logical behavior—several assertions may belong to that behavior, and closely related input variations can stay together. Cases start in fresh Bash processes, run independently, and should not depend on order. Pick a case name from `tests/cases/` to run it alone, or run the full suite as above. The source checkout is mounted read-only.
+`tests/run.sh` discovers behavior-named scripts in `tests/cases/`. Each file tests one logical behavior—several assertions may belong to that behavior, and closely related input variations can stay together. Cases start in fresh Bash processes, run independently, and should not depend on order. Pick a case name from `tests/cases/` to run it alone, or run the full suite as above. The source checkout is mounted read-only. `updater_*` cases exercise functions sourced from `syno_docker_update.sh`; `runtime_probe_*` cases exercise the separate, optional `tests/check-dsm-runtime.sh` preflight. Passing a probe case does **not** establish that the updater enforces the same rule. The updater retains its own DSM guard because running the probe is not required before invoking the updater.
 
 Cases read as **arrange → act → expect** steps. Name each assertion's contract instead of using an anonymous `[[ ... ]]` check. For example:
 

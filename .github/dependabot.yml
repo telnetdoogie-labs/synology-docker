@@ -13,3 +13,12 @@ updates:
       - dependency-type: all
     cooldown:
       default-days: 7
+  - package-ecosystem: docker
+    directory: "/tests"
+    schedule:
+      interval: weekly
+      timezone: Etc/UTC
+    allow:
+      - dependency-type: all
+    cooldown:
+      default-days: 7

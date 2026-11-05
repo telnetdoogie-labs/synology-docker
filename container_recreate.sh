@@ -56,7 +56,7 @@ fi
 debug "environment variables (filtered)..."
 # Format the remaining environment variables for docker run
 for var in $filtered_env_vars; do
-  value=$(echo "$container_info" | jq -r --arg var "$var" '.[0].Config.Env[]? | select(startswith($var))')
+  value=$(echo "$container_info" | jq -r --arg var "$var" '.[0].Config.Env[]? | select(startswith($var + "="))')
   if [ -n "$value" ]; then
     docker_command+=("-e \"$value\"")
   fi
@@ -87,6 +87,7 @@ debug "cmd..."
 cmd=$(echo "$container_info" | jq -r '.[0].Config.Cmd // [] | join(" ")')
 
 # Add the image and command
+docker_command+=("--log-driver local")
 docker_command+=("-it $image $cmd")
 
 # Output the final docker command with a backslash at the end of each line except the last

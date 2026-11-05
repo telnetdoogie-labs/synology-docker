@@ -11,6 +11,10 @@ debug() {
   fi
 }
 
+quote_arg() {
+  printf '%q' "$1"
+}
+
 # Check if a container ID or name was provided
 if [ -z "$1" ]; then
   echo "Usage: $0 <container_name_or_id>"
@@ -50,7 +54,7 @@ docker_command+=("docker run -d \\")
 
 # Add name only if it exists
 if [ -n "$container_name" ]; then
-  docker_command+=("--name $container_name")
+  docker_command+=("--name $(quote_arg "$container_name")")
 fi
 
 debug "environment variables (filtered)..."
@@ -58,37 +62,38 @@ debug "environment variables (filtered)..."
 for var in $filtered_env_vars; do
   value=$(echo "$container_info" | jq -r --arg var "$var" '.[0].Config.Env[]? | select(startswith($var + "="))')
   if [ -n "$value" ]; then
-    docker_command+=("-e \"$value\"")
+    docker_command+=("-e $(quote_arg "$value")")
   fi
 done
 
 debug "port mappings..."
 # Extract port mappings and add each port to the array individually
-ports=$(echo "$container_info" | jq -r '.[0].HostConfig.PortBindings // {} | to_entries[]? | "-p " + .value[0].HostPort + ":" + .key')
-if [ -n "$ports" ]; then
-  # Add each port as a separate entry
-  while IFS= read -r port; do
-    docker_command+=("$port")
-  done <<< "$ports"
-fi
+while IFS= read -r -d '' port; do
+  docker_command+=("-p $(quote_arg "$port")")
+done < <(jq -j '
+  (.[0].HostConfig.PortBindings // {}) | to_entries[]? |
+  .key as $container_port | .value[]? |
+  select((.HostPort // "") != "") |
+  ((if (.HostIp // "") == "" then ""
+    elif (.HostIp | contains(":")) then "[" + .HostIp + "]:"
+    else .HostIp + ":" end) + .HostPort + ":" + $container_port + "\u0000")
+' <<< "$container_info")
 
 debug "volumes..."
 # Extract volumes and add each volume to the array individually
-volumes=$(echo "$container_info" | jq -r '(.[0].Mounts // [])[] | "-v " + .Source + ":" + .Destination')
-if [ -n "$volumes" ]; then
-  # Add each volume as a separate entry
-  while IFS= read -r volume; do
-    docker_command+=("$volume")
-  done <<< "$volumes"
-fi
+while IFS= read -r -d '' volume; do
+  docker_command+=("-v $(quote_arg "$volume")")
+done < <(jq -j '(.[0].Mounts // [])[] | (.Source + ":" + .Destination + (if .RW == false then ":ro" else "" end) + "\u0000")' <<< "$container_info")
 
 debug "cmd..."
-# Extract the command used inside the container
-cmd=$(echo "$container_info" | jq -r '.[0].Config.Cmd // [] | join(" ")')
-
 # Add the image and command
 docker_command+=("--log-driver local")
-docker_command+=("-it $image $cmd")
+docker_line="-it $(quote_arg "$image")"
+# Keep each inspected argument intact, even if it contains whitespace.
+while IFS= read -r -d '' arg; do
+  docker_line+=" $(quote_arg "$arg")"
+done < <(jq -j '.[0].Config.Cmd[]? | . + "\u0000"' <<< "$container_info")
+docker_command+=("$docker_line")
 
 # Output the final docker command with a backslash at the end of each line except the last
 echo "${docker_command[0]}"

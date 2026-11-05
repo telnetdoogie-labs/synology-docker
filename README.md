@@ -220,7 +220,15 @@ docker build -t synology-docker-tests -f tests/Dockerfile .
 docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests
 ```
 
-The supported test scope is DSM major versions 6 and 7 only. These disposable tests cover version selection, stage/backup/restore failure paths, DSM 6/7 service failures, forwarding edits, module downloads, AppArmor rollback, and container-command rendering. They mock DSM; they do not modify a live Docker service or substitute for kernel and package tests on a NAS.
+Run one focused case by its file name without `.sh` (for example, when changing backup behavior):
+
+```bash
+docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests bash tests/run.sh backup
+```
+
+`tests/run.sh` discovers the behavior-named scripts in `tests/cases/`. Each case starts in a fresh Bash process with a small shared fixture in `tests/lib/test_env.sh`; cases also run independently, so their order must not matter. Failures stop the suite and identify the case and assertion. `tests/Dockerfile` supplies a disposable Debian filesystem for the fake DSM package paths; Docker inside a case is mocked, not a real Docker daemon under test. The source checkout is mounted read-only.
+
+The supported test scope is DSM major versions 6 and 7 only. The mocked cases cover version selection, stage/backup/restore failure paths, DSM 6/7 service failures, forwarding edits, module downloads, AppArmor rollback, and container-command rendering. They do not modify a live Docker service or substitute for kernel and package tests on a NAS. The separate CI Bash 4.3 check covers the empty-inventory listing path with that interpreter; it also uses a Docker stub.
 
 ### Validation status
 

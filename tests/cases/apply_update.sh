@@ -4,6 +4,8 @@
 source "$(dirname "$0")/../lib/test_env.sh"
 init_update_fixture
 prepare_installed_files
+
+# Arrange: fake AppArmor, downloads, DSM service state, and installed files.
 parser="$test_tmp_dir/apparmor_parser"
 enabled="$test_tmp_dir/apparmor-enabled"
 profiles="$test_tmp_dir/apparmor-profiles"
@@ -40,6 +42,7 @@ rm -f /tmp/synopkg-state
 printf 'docker-default (enforce)\n' > "$profiles"
 printf 'Y\n' > "$enabled"
 
+# Act: apply an update through the real entrypoint with mocked externals.
 update_output=$(
   docker() {
     case "$1" in
@@ -91,14 +94,17 @@ update_output=$(
   main --force --skip-iptables --path "$test_tmp_dir" --backup update-apply.tgz \
     --docker 29.0.0 --compose 2.42.0 update
 )
-[[ "$update_output" == *'Done.'* ]]
-grep -q 'staged-only' "$SYNO_DOCKER_BIN/docker"
-[[ "$(cat "$SYNO_DOCKER_BIN/docker-compose")" == 'compose-binary' ]]
-[[ "$(jq -r '.["log-driver"]' "$SYNO_DOCKER_JSON")" == 'local' ]]
-[[ "$(jq -r '.["log-opts"]["max-file"]' "$SYNO_DOCKER_JSON")" == '5' ]]
-grep -q 'iptables -C FORWARD -j DOCKER-FORWARD' "$SYNO_DOCKER_SCRIPT"
-[[ -f "$test_tmp_dir/update-apply.tgz" ]]
-[[ "$(cat /tmp/synopkg-state)" == 'started' ]]
-[[ -f "${profile}.synology-docker-managed" && -x "${parser}.real" ]]
-[[ -z "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'docker_update.*' -print -quit)" ]]
+
+# Expect: new binaries/config/service state, backup, and no temp work.
+expect_contains "$update_output" 'Done.' 'update reports completion'
+expect_file_contains "$SYNO_DOCKER_BIN/docker" staged-only 'new engine binary is installed'
+expect_eq compose-binary "$(<"$SYNO_DOCKER_BIN/docker-compose")" 'new Compose binary is installed'
+expect_eq local "$(jq -r '.["log-driver"]' "$SYNO_DOCKER_JSON")" 'daemon uses local logging'
+expect_eq 5 "$(jq -r '.["log-opts"]["max-file"]' "$SYNO_DOCKER_JSON")" 'daemon retains five log files'
+expect_file_contains "$SYNO_DOCKER_SCRIPT" 'iptables -C FORWARD -j DOCKER-FORWARD' 'startup script includes forwarding rule'
+expect_file_exists "$test_tmp_dir/update-apply.tgz" 'update saves a backup'
+expect_eq started "$(</tmp/synopkg-state)" 'Container Manager is restarted'
+expect_file_exists "${profile}.synology-docker-managed" 'managed AppArmor profile exists'
+expect_success 'parser wrapper is executable' test -x "${parser}.real"
+expect_eq '' "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'docker_update.*' -print -quit)" 'temporary update directory was removed'
 printf 'Non-stage update apply-path tests passed\n'

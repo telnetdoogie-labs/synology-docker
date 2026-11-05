@@ -226,7 +226,18 @@ Run one focused case by its file name without `.sh` (for example, when changing 
 docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests bash tests/run.sh backup
 ```
 
-`tests/run.sh` discovers the behavior-named scripts in `tests/cases/`. Each case starts in a fresh Bash process with a small shared fixture in `tests/lib/test_env.sh`; cases also run independently, so their order must not matter. Failures stop the suite and identify the case and assertion. `tests/Dockerfile` supplies a disposable Debian filesystem for the fake DSM package paths; Docker inside a case is mocked, not a real Docker daemon under test. The source checkout is mounted read-only.
+`tests/run.sh` discovers the behavior-named scripts in `tests/cases/`. Each case starts in a fresh Bash process with a shared fixture in `tests/lib/test_env.sh`, so cases also run independently and their order must not matter. The source checkout is mounted read-only.
+
+Cases read as **arrange → act → expect** steps. Name each assertion's contract instead of using an anonymous `[[ ... ]]` check. For example:
+
+```bash
+expect_eq 600 "$(stat -c %a "$archive")" 'backup is owner-only'
+expect_contains "$output" 'Docker Engine' 'engine update is listed'
+expect_file_exists "$archive" 'backup archive exists'
+expect_failure 'invalid JSON is rejected' sh "$repo_dir/syno_docker_switch_logger.sh" "$config"
+```
+
+The shared helpers print the failed contract. Container inspection data shared by the listing and recreation cases lives in `tests/lib/container_fixture.sh`. `tests/Dockerfile` supplies a disposable Debian filesystem for fake DSM package paths; Docker inside a case is mocked, not a real Docker daemon under test.
 
 The supported test scope is DSM major versions 6 and 7 only. The mocked cases cover version selection, stage/backup/restore failure paths, DSM 6/7 service failures, forwarding edits, module downloads, AppArmor rollback, and container-command rendering. They do not modify a live Docker service or substitute for kernel and package tests on a NAS. The separate CI Bash 4.3 check covers the empty-inventory listing path with that interpreter; it also uses a Docker stub.
 

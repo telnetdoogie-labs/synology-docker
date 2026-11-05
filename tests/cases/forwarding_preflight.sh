@@ -5,22 +5,24 @@ source "$(dirname "$0")/../lib/test_env.sh"
 init_update_fixture
 prepare_installed_files
 
+# Arrange: the installed startup script lacks the forwarding anchor.
 printf '#!/bin/sh\n' > "$SYNO_DOCKER_SCRIPT"
 skip_docker_update='true'
 command='update'
 validate_forwarding_anchor
 execute_update_script >/dev/null
-[[ $(wc -l < "$SYNO_DOCKER_SCRIPT") -eq 1 ]]
+expect_eq 1 "$(wc -l < "$SYNO_DOCKER_SCRIPT")" 'skip update leaves script unchanged'
+
+# Act/expect: a full update must reject the missing anchor.
 skip_docker_update='false'
 command=''
-if (execute_update_script) >/dev/null 2>&1; then
-  printf 'Missing forwarding anchor was accepted\n' >&2
-  exit 1
-fi
-[[ $(wc -l < "$SYNO_DOCKER_SCRIPT") -eq 1 ]]
+expect_failure 'full update requires forwarding anchor' execute_update_script
+expect_eq 1 "$(wc -l < "$SYNO_DOCKER_SCRIPT")" 'failed update leaves script unchanged'
+
+# Act/expect: a valid script receives exactly one forwarding rule.
 cp "$repo_dir/test_file/start-stop-status" "$SYNO_DOCKER_SCRIPT"
 execute_update_script >/dev/null
-grep -q 'iptables -C FORWARD -j DOCKER-FORWARD' "$SYNO_DOCKER_SCRIPT"
+expect_file_contains "$SYNO_DOCKER_SCRIPT" 'iptables -C FORWARD -j DOCKER-FORWARD' 'forwarding rule inserted'
 execute_update_script >/dev/null
-[[ $(grep -c 'iptables -C FORWARD -j DOCKER-FORWARD' "$SYNO_DOCKER_SCRIPT") -eq 1 ]]
+expect_eq 1 "$(grep -c 'iptables -C FORWARD -j DOCKER-FORWARD' "$SYNO_DOCKER_SCRIPT")" 'rule is inserted only once'
 printf 'Forwarding preflight and update tests passed\n'

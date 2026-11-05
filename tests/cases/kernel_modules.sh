@@ -3,6 +3,8 @@
 # shellcheck source=tests/lib/test_env.sh
 source "$(dirname "$0")/../lib/test_env.sh"
 init_update_fixture
+
+# Arrange: fake HTTPS downloads into the isolated module folder.
 curl_args_file="$test_tmp_dir/curl-args"
 
 # shellcheck source=install_iptables_modules.sh
@@ -32,20 +34,25 @@ curl() {
     printf 'ip6\n' > "$destination"
   fi
 }
+
+# Act/expect: download both modules with HTTPS/TLS requirements.
 download_and_place_modules >/dev/null
 curl_args=$(<"$curl_args_file")
-[[ "$curl_args" == *"--proto =https"* ]]
-[[ "$curl_args" == *"--proto-redir =https"* ]]
-[[ "$curl_args" == *"--tlsv1.2"* ]]
-[[ -f "$MODULES_FOLDER/$IP4MODULE" && -f "$MODULES_FOLDER/$IP6MODULE" ]]
+expect_contains "$curl_args" '--proto =https' 'module download requires HTTPS'
+expect_contains "$curl_args" '--proto-redir =https' 'redirects require HTTPS'
+expect_contains "$curl_args" '--tlsv1.2' 'module download requires TLS 1.2'
+expect_file_exists "$MODULES_FOLDER/$IP4MODULE" 'IPv4 module downloaded'
+expect_file_exists "$MODULES_FOLDER/$IP6MODULE" 'IPv6 module downloaded'
+
+# Act/expect: a failed download aborts.
+# shellcheck disable=SC2329 # Called indirectly by download_and_place_modules via expect_failure.
 curl() {
   return 1
 }
-if (download_and_place_modules) >/dev/null 2>&1; then
-  printf 'Failed kernel module download was accepted\n' >&2
-  exit 1
-fi
+expect_failure 'failed module download is rejected' download_and_place_modules
 unset -f curl
+
+# Arrange/expect: the startup script must load both modules.
 FILE="$test_tmp_dir/module-start.sh"
 printf '# Load raw modules\n' > "$FILE"
 if start_script_loads_modules >/dev/null; then
@@ -58,5 +65,5 @@ if start_script_loads_modules >/dev/null; then
   exit 1
 fi
 printf 'insmod %s/%s\n' "$MODULES_FOLDER" "$IP6MODULE" >> "$FILE"
-start_script_loads_modules >/dev/null
+expect_success 'startup script loads both modules' start_script_loads_modules >/dev/null
 printf 'Module download and startup checks passed\n'

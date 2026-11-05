@@ -5,6 +5,7 @@ source "$(dirname "$0")/../lib/test_env.sh"
 init_update_fixture
 prepare_installed_files
 
+# Arrange: stage a newer engine and Compose while recording installed files.
 mkdir -p "$test_tmp_dir/engine/docker" /etc.defaults
 cp "$SYNO_DOCKER_BIN/docker" "$test_tmp_dir/engine/docker/docker"
 cp "$SYNO_DOCKER_BIN/dockerd" "$test_tmp_dir/engine/docker/dockerd"
@@ -15,6 +16,8 @@ installed_script_hash=$(sha256sum "$SYNO_DOCKER_SCRIPT" | cut -d' ' -f1)
 tar -czf "$test_tmp_dir/engine.tgz" -C "$test_tmp_dir/engine" docker
 printf 'compose-binary\n' > "$test_tmp_dir/compose-binary"
 printf 'majorversion="7"\nproductversion="7.2"\n' > /etc.defaults/VERSION
+
+# Act: invoke the updater with --stage and mocked downloads.
 stage_output=$(
   docker() {
     case "$1" in
@@ -47,11 +50,16 @@ stage_output=$(
   service_stopped='false'
   main --force --stage --path "$test_tmp_dir" --backup staged.tgz --docker 29.0.0 --compose 2.42.0 --target all update
 )
+
+# Expect: retain downloads/backup without modifying installed files.
 stage_dir=$(printf '%s\n' "$stage_output" | sed -n 's/^Staged files: //p' | tail -n 1)
-[[ -n "$stage_dir" && -f "$stage_dir/docker-29.0.0.tgz" && -f "$stage_dir/docker-compose" ]] || { printf 'FAIL: stage must retain both downloads\n' >&2; exit 1; }
-[[ -f "$stage_dir/docker/docker" && -f "$test_tmp_dir/staged.tgz" ]] || { printf 'FAIL: stage must retain extracted binary and backup\n' >&2; exit 1; }
-assert_eq "$installed_docker_hash" "$(sha256sum "$SYNO_DOCKER_BIN/docker" | cut -d' ' -f1)" 'stage must not replace installed Docker'
-assert_eq "$installed_config_hash" "$(sha256sum "$SYNO_DOCKER_JSON" | cut -d' ' -f1)" 'stage must not alter daemon config'
-assert_eq "$installed_script_hash" "$(sha256sum "$SYNO_DOCKER_SCRIPT" | cut -d' ' -f1)" 'stage must not alter service script'
+expect_success 'staging path is reported' test -n "$stage_dir"
+expect_file_exists "$stage_dir/docker-29.0.0.tgz" 'engine download is retained'
+expect_file_exists "$stage_dir/docker-compose" 'Compose download is retained'
+expect_file_exists "$stage_dir/docker/docker" 'extracted engine is retained'
+expect_file_exists "$test_tmp_dir/staged.tgz" 'backup is retained'
+expect_eq "$installed_docker_hash" "$(sha256sum "$SYNO_DOCKER_BIN/docker" | cut -d' ' -f1)" 'stage must not replace installed Docker'
+expect_eq "$installed_config_hash" "$(sha256sum "$SYNO_DOCKER_JSON" | cut -d' ' -f1)" 'stage must not alter daemon config'
+expect_eq "$installed_script_hash" "$(sha256sum "$SYNO_DOCKER_SCRIPT" | cut -d' ' -f1)" 'stage must not alter service script'
 rm -rf "$stage_dir"
 printf 'Stage workflow retains its downloads without changing the installed binaries\n'

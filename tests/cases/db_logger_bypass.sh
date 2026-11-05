@@ -4,6 +4,7 @@
 source "$(dirname "$0")/../lib/test_env.sh"
 init_update_fixture
 
+# Arrange: Docker has both db and local logger containers.
 skip_docker_update='false'
 stage='false'
 docker() {
@@ -23,10 +24,15 @@ docker() {
 }
 jq '.["log-driver"] = "db"' "$SYNO_DOCKER_JSON" > "${SYNO_DOCKER_JSON}.tmp" &&
   mv "${SYNO_DOCKER_JSON}.tmp" "$SYNO_DOCKER_JSON"
+
+# Act/expect: force skips the preflight entirely.
 force='true'
 db_forced_output=$(validate_db_logger 2>&1)
-[[ -z "$db_forced_output" ]]
+expect_eq '' "$db_forced_output" 'force bypasses DB preflight without output'
+
+# Act/expect: inspection failure still blocks an unforced update.
 force='false'
+# shellcheck disable=SC2329 # Called indirectly by validate_db_logger via expect_failure.
 docker() {
   if [[ "$1" = 'ps' && "${2:-}" = '-aq' ]]; then
     printf 'container-one\n'
@@ -34,10 +40,9 @@ docker() {
   fi
   return 1
 }
-if (validate_db_logger) >/dev/null 2>&1; then
-  printf 'db-logger inspection failure was not blocked\n' >&2
-  exit 1
-fi
+expect_failure 'failed inspection blocks unforced update' validate_db_logger
+
+# Act/expect: skipped and staged updates bypass inspection.
 skip_docker_update='true'
 docker() { return 1; }
 validate_db_logger

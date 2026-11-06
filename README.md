@@ -228,7 +228,9 @@ docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests bash tests/run.sh 
 
 `tests/run.sh` discovers behavior-named scripts in `tests/cases/`. Each file tests one logical behavior—several assertions may belong to that behavior, and closely related input variations can stay together. Cases start in fresh Bash processes, run independently, and should not depend on order. Pick a case name from `tests/cases/` to run it alone, or run the full suite as above. The source checkout is mounted read-only. `updater_*` cases exercise functions sourced from `syno_docker_update.sh`; `runtime_probe_*` cases exercise the separate, optional `tests/check-dsm-runtime.sh` preflight. Passing a probe case does **not** establish that the updater enforces the same rule. The updater retains its own DSM guard because running the probe is not required before invoking the updater.
 
-Cases read as **arrange → act → expect** steps. Name each assertion's contract instead of using an anonymous `[[ ... ]]` check. For example:
+**When adding or changing a test, aim for useful feedback and protection of production functionality.** Name the behavior the user relies on, then exercise the production script or function that actually enforces it. Give each logical behavior an independently runnable case in `tests/cases/`—not a file for every assertion, and not one catch-all file for unrelated behaviors. A failure should tell the next contributor *what contract broke*, while the runner continues to report the other failures. Keep cases human-readable and meaningful: use arrange → act → expect, descriptive names, and assertions that explain the expected behavior. Share bulky setup through a narrow fixture, but leave each case's purpose and expectations visible. Run the focused case and the full suite after a change; if it is unclear whether a case protects the intended production branch, check it with a temporary, targeted regression or mutation. Do not mistake a passing mock for real DSM compatibility.
+
+Name each assertion's contract instead of using an anonymous `[[ ... ]]` check. For example:
 
 ```bash
 expect_eq 600 "$(stat -c %a "$archive")" 'backup is owner-only'

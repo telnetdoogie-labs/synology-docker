@@ -220,7 +220,30 @@ docker build -t synology-docker-tests -f tests/Dockerfile .
 docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests
 ```
 
-The supported test scope is DSM major versions 6 and 7 only. These disposable tests cover version selection, stage/backup/restore failure paths, DSM 6/7 service failures, forwarding edits, module downloads, AppArmor rollback, and container-command rendering. They mock DSM; they do not modify a live Docker service or substitute for kernel and package tests on a NAS.
+Run one focused case by its file name without `.sh` (for example, when changing backup behavior):
+
+```bash
+docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests bash tests/run.sh backup_creates_private_archive
+```
+
+`tests/run.sh` discovers behavior-named scripts in `tests/cases/`. Each file tests one logical behavior—several assertions may belong to that behavior, and closely related input variations can stay together. Cases start in fresh Bash processes, run independently, and should not depend on order. Pick a case name from `tests/cases/` to run it alone, or run the full suite as above. The source checkout is mounted read-only. `updater_*` cases exercise functions sourced from `syno_docker_update.sh`; `runtime_probe_*` cases exercise the separate, optional `tests/check-dsm-runtime.sh` preflight. Passing a probe case does **not** establish that the updater enforces the same rule. The updater retains its own DSM guard because running the probe is not required before invoking the updater.
+
+**When adding or changing a test, aim for useful feedback and protection of production functionality.** Name the behavior the user relies on, then exercise the production script or function that actually enforces it. Give each logical behavior an independently runnable case in `tests/cases/`—not a file for every assertion, and not one catch-all file for unrelated behaviors. A failure should tell the next contributor *what contract broke*, while the runner continues to report the other failures. Keep cases human-readable and meaningful: use arrange → act → expect, descriptive names, and assertions that explain the expected behavior. Share bulky setup through a narrow fixture, but leave each case's purpose and expectations visible. Run the focused case and the full suite after a change; if it is unclear whether a case protects the intended production branch, check it with a temporary, targeted regression or mutation. Do not mistake a passing mock for real DSM compatibility.
+
+Name each assertion's contract instead of using an anonymous `[[ ... ]]` check. For example:
+
+```bash
+expect_eq 600 "$(stat -c %a "$archive")" 'backup is owner-only'
+expect_contains "$output" 'Docker Engine' 'engine update is listed'
+expect_file_exists "$archive" 'backup archive exists'
+expect_failure 'invalid JSON is rejected' sh "$repo_dir/syno_docker_switch_logger.sh" "$config"
+```
+
+`tests/lib/test_env.sh` provides the disposable-image safety guard and named assertions. Narrow shared fixtures under `tests/lib/` set up mocked DSM, Docker inventory, logger, forwarding, kernel-module, and AppArmor environments; each case keeps its own behavior-specific setup and expectations visible. `tests/Dockerfile` supplies a disposable Debian filesystem for fake DSM package paths; Docker inside a case is mocked, not a real Docker daemon under test. Cases covering `syno_docker_update.sh`, `install_fuse_overlayfs.sh`, `install_apparmor_profile.sh`, and `install_iptables_modules.sh` exercise functions or generated artifacts from those root scripts; the runtime probe is tested separately.
+
+The supported test scope is DSM major versions 6 and 7 only. The mocked cases cover version selection, stage/backup/restore failure paths, DSM 6/7 service failures, forwarding edits, module downloads, AppArmor rollback, and container-command rendering. They do not modify a live Docker service or substitute for kernel and package tests on a NAS. The separate CI Bash 4.3 check covers the empty-inventory listing path with that interpreter; it also uses a Docker stub.
+
+**Known production-coverage gaps:** `container_recreate.sh` renders a best-guess command, not a complete or guaranteed reconstruction of a container. The independent recreation cases check inline environment and command quoting, loopback/IPv6 and empty port bindings, and read-only mounts against a fake Docker command, including shell-injection data; they do not prove every Docker option or real runtime behavior. Inspect the hint before use; prefer the documented Compose migration for non-trivial containers. The updater's mocked update archives contain only `docker` and `dockerd`; those green paths do not prove it rejects an incomplete real Engine bundle. Adding exact archive regression tests is separate work, not an implicit guarantee of this suite.
 
 ### Validation status
 

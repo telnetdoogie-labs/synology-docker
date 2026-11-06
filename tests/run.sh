@@ -21,10 +21,22 @@ if [[ "$#" -eq 1 ]]; then
   cases=("$case_file")
 fi
 passed=0
+failed_cases=()
 for case_file in "${cases[@]}"; do
-  printf 'RUN %s\n' "${case_file##*/}"
-  bash "$case_file"
-  printf 'PASS %s\n' "${case_file##*/}"
-  ((passed+=1))
+  case_name=${case_file##*/}
+  printf 'RUN %s\n' "$case_name"
+  if bash "$case_file"; then
+    printf 'PASS %s\n' "$case_name"
+    ((passed+=1))
+  else
+    printf 'FAIL %s\n' "$case_name" >&2
+    failed_cases+=("$case_name")
+  fi
 done
+if ((${#failed_cases[@]})); then
+  printf 'FAIL: %s passed, %s failed\n' "$passed" "${#failed_cases[@]}" >&2
+  printf 'Failed cases:\n' >&2
+  printf '  %s\n' "${failed_cases[@]}" >&2
+  exit 1
+fi
 printf 'PASS: %s independent test case(s)\n' "$passed"

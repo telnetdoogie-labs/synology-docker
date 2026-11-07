@@ -1,4 +1,4 @@
-name: CI
+name: Tests
 
 on:
   push:
@@ -6,6 +6,8 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  # The release workflow runs these tests first and only publishes if they pass.
+  workflow_call:
 
 permissions:
   contents: read
@@ -16,7 +18,7 @@ concurrency:
 
 jobs:
   regression-tests:
-    name: Docker regression suite
+    name: Regression tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

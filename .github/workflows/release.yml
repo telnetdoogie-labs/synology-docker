@@ -1,0 +1,75 @@
+name: Release
+
+# Actions → Release → Run workflow (from main). Runs the tests, then tags the next version,
+# attaches a tarball of the scripts, and publishes the release with notes from
+# .github/release-template.md and GitHub's generated changelog.
+#
+# Releases are immutable once published. To add highlights first, untick "publish":
+# the release is left as a draft to edit and publish by hand. Don't re-run the workflow
+# for the same version after editing a draft, as it would refresh the draft's notes.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to increment
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      publish:
+        description: Publish straight away (untick to leave a draft to edit first)
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: Tests
+    if: ${{ github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  release:
+    name: Publish release
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Package scripts
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --prefix=synology-docker/ -o dist/synology-docker.tar.gz HEAD
+
+      - name: Publish release
+        id: release
+        uses: SierraSoftworks/gh-releases@a1d47201b036e0d4843d05ce56bde67dc262b95f # v1.1.0
+        with:
+          token: ${{ github.token }}
+          bump: ${{ inputs.bump }}
+          create: "true"
+          publish: ${{ inputs.publish }}
+          notes-template: .github/release-template.md
+          files: dist/synology-docker.tar.gz
+
+      - name: Summary
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          URL: ${{ steps.release.outputs.url }}
+          PUBLISHED: ${{ inputs.publish }}
+        run: |
+          if [ "$PUBLISHED" = true ]; then
+            echo "Published [$TAG]($URL)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Drafted [$TAG]($URL). Edit the notes, then publish it by hand." >> "$GITHUB_STEP_SUMMARY"
+          fi

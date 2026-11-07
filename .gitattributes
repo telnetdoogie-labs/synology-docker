@@ -1,3 +1,10 @@
 # Shell entry points and DSM script fixtures must remain LF on Windows checkouts.
 *.sh text eol=lf
 test_file/start-stop-status* text eol=lf
+
+# Left out of release tarballs and GitHub source archives. The runtime probe stays:
+# the README has users run it on their NAS.
+.github/ export-ignore
+AGENTS.md export-ignore
+tests/** export-ignore
+tests/check-dsm-runtime.sh -export-ignore

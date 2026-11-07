@@ -6,6 +6,8 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  # The release workflow runs CI first and only publishes if it passes.
+  workflow_call:
 
 permissions:
   contents: read

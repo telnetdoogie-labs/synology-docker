@@ -1,6 +1,6 @@
 name: Release
 
-# Actions → Release → Run workflow (from main). Runs CI, then tags the next version,
+# Actions → Release → Run workflow (from main). Runs the tests, then tags the next version,
 # attaches a tarball of the scripts, and publishes the release with notes from
 # .github/release-template.md and GitHub's generated changelog.
 #
@@ -28,14 +28,14 @@ concurrency:
 
 jobs:
   ci:
-    name: CI
+    name: Tests
     if: ${{ github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
   release:
-    name: Publish
+    name: Publish release
     needs: ci
     runs-on: ubuntu-latest
     permissions:

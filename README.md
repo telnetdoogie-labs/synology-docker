@@ -9,7 +9,7 @@
 
 ## Why this exists
 
-Synology ships Docker or, as they call it in later versions "Container Manager"... but it's OLD. Really old.
+Synology ships Docker or, as they call it in later versions, "Container Manager"... but it's OLD. Really old.
 
 This repo gives you a **repeatable, reversible, and reasonably safe** way to:
 
@@ -23,11 +23,11 @@ If you’re comfortable with SSH and `sudo`, this is for you.
 > [!IMPORTANT]\
 > **This is not supported by Synology.**
 > You can absolutely break things if you ignore instructions. Always have backups.
-> Once upgraded, The ContainerManager UI will no longer work reliably for managing containers or observing logs.
+> After the upgrade, the ContainerManager UI will no longer work reliably for managing containers or viewing logs.
 
 ### DSM Version
 
-Before using this, update to the most recent version of DSM that you can. That'll avoid many issues and will make sure the minor version of your kernel is up to date. I can't keep track of all of the older minor kernel versions for each platform, that would become unmanageable. Sometimes you'll need to download the latest DSM patch manually as it may not show as an automatic update for your model. Look for your latest DSM [here](https://www.synology.com/en-br/support/download)
+Before using this, update to the most recent DSM version you can. That'll avoid many issues and ensure your kernel minor version is up to date. I can't keep track of all the older minor kernel versions for each platform; it would become unmanageable. Sometimes you'll need to download the latest DSM patch manually, as it may not show as an automatic update for your model. Look for your latest DSM [here](https://www.synology.com/en-us/support/download)
 
 ### Nvidia users
 
@@ -178,15 +178,15 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 
 ## Options
 
-| Option              | Description                                                                  |
-| ------------------- | ---------------------------------------------------------------------------- |
-| `--docker VERSION`  | Target Docker version                                                        |
-| `--compose VERSION` | Target Compose version                                                       |
-| `--backup NAME`     | Backup file name                                                             |
+| Option              | Description                                                                         |
+| ------------------- | ----------------------------------------------------------------------------------- |
+| `--docker VERSION`  | Target Docker version                                                               |
+| `--compose VERSION` | Target Compose version                                                              |
+| `--backup NAME`     | Backup file name                                                                    |
 | `--force`           | Skip confirmation and compatibility checks; allow an explicitly requested downgrade |
-| `--stage`           | Download and extract without installing; print the retained staging path   |
-| `--skip-iptables`   | Don't check for / install iptables modules                                   |
-| `--fuse-overlayfs`  | Switch storage to fuse-overlayfs (see below)                                |
+| `--stage`           | Download and extract without installing; print the retained staging path            |
+| `--skip-iptables`   | Don't check for / install iptables modules                                          |
+| `--fuse-overlayfs`  | Switch storage to fuse-overlayfs (see below)                                        |
 
 ## fuse-overlayfs (volumes on `aufs` without overlay support)
 
@@ -206,7 +206,7 @@ sudo ./install_fuse_overlayfs.sh
 
 Things to know before switching:
 
-- Images and containers from the old storage driver won't be visible afterwards. Pull images and recreate containers; volumes and bind mounts are kept.
+- Images and containers from the old storage driver won't be visible afterward. Pull images and recreate containers; volumes and bind mounts are kept.
 - It starts a separate containerd at boot (`/usr/local/etc/rc.d/containerd-fuse-overlayfs.sh`) and disables Synology's `updater` tool, which would otherwise switch the driver back to `aufs`.
 - The installer refuses to run on any driver other than `aufs`, and does nothing if your kernel supports overlay.
 - To undo it: `sudo ./install_fuse_overlayfs.sh --uninstall`, then restart Container Manager.
@@ -228,7 +228,7 @@ docker run --rm -v "$PWD:/workspace:ro" synology-docker-tests bash tests/run.sh 
 
 `tests/run.sh` discovers behavior-named scripts in `tests/cases/`. Each file tests one logical behavior—several assertions may belong to that behavior, and closely related input variations can stay together. Cases start in fresh Bash processes, run independently, and should not depend on order. Pick a case name from `tests/cases/` to run it alone, or run the full suite as above. The source checkout is mounted read-only. `updater_*` cases exercise functions sourced from `syno_docker_update.sh`; `runtime_probe_*` cases exercise the separate, optional `tests/check-dsm-runtime.sh` preflight. Passing a probe case does **not** establish that the updater enforces the same rule. The updater retains its own DSM guard because running the probe is not required before invoking the updater.
 
-**When adding or changing a test, aim for useful feedback and protection of production functionality.** Name the behavior the user relies on, then exercise the production script or function that actually enforces it. Give each logical behavior an independently runnable case in `tests/cases/`—not a file for every assertion, and not one catch-all file for unrelated behaviors. A failure should tell the next contributor *what contract broke*, while the runner continues to report the other failures. Keep cases human-readable and meaningful: use arrange → act → expect, descriptive names, and assertions that explain the expected behavior. Share bulky setup through a narrow fixture, but leave each case's purpose and expectations visible. Run the focused case and the full suite after a change; if it is unclear whether a case protects the intended production branch, check it with a temporary, targeted regression or mutation. Do not mistake a passing mock for real DSM compatibility.
+**When adding or changing a test, aim for useful feedback and protection of production functionality.** Name the behavior the user relies on, then exercise the production script or function that actually enforces it. Give each logical behavior an independently runnable case in `tests/cases/`—not a file for every assertion, and not one catch-all file for unrelated behaviors. A failure should tell the next contributor what contract broke, while the runner continues to report other failures. Keep cases human-readable and meaningful: use arrange → act → expect, descriptive names, and assertions that explain the expected behavior. Share bulky setup through a narrow fixture, but leave each case's purpose and expectations visible. Run the focused case and the full suite after a change; if it is unclear whether a case protects the intended production branch, check it with a temporary, targeted regression or mutation. Do not mistake a passing mock for real DSM compatibility.
 
 Name each assertion's contract instead of using an anonymous `[[ ... ]]` check. For example:
 
@@ -256,7 +256,7 @@ Before running the updater on a NAS, check its runtime prerequisites with:
 sh tests/check-dsm-runtime.sh 29
 ```
 
-Replace `29` with the planned Docker Engine major version. The updater requires `/bin/bash`, `jq`, `curl`, `docker`, `realpath`, `readlink -f`, `mktemp -d`, `diff`, `date`, and GNU-compatible `timeout --foreground`, in addition to standard shell utilities. It also needs DSM's `synopkg` (DSM 7) or `synoservicectl` (DSM 6). For a Docker Engine 28+ target, the probe additionally checks `insmod`, `lsmod`, `iptables`, and `/bin/get_key_value`. Kernel modules are downloaded over HTTPS (TLS 1.2) from `synology-kernelmodules` `main` for your kernel and platform; unsupported combinations need manually installed modules. `/bin/sh` may be a different shell; run scripts through their shebangs rather than invoking Bash scripts with `sh`.
+Replace `29` with the planned Docker Engine major version. The updater requires `/bin/bash`, `jq`, `curl`, `docker`, `realpath`, `readlink -f`, `mktemp -d`, `diff`, `date`, and GNU-compatible `timeout --foreground`, in addition to standard shell utilities. It also needs DSM's `synopkg` (DSM 7) or `synoservicectl` (DSM 6). For a Docker Engine 28+ target, the probe additionally checks `insmod`, `lsmod`, `iptables`, `sha256sum`, and `/bin/get_key_value`. Kernel modules are downloaded over HTTPS (TLS 1.2) from `synology-kernelmodules` `main` for your kernel and platform, and checked against the `SHA256SUMS` published with them before they are installed; unsupported combinations need manually installed modules. `/bin/sh` may be a different shell; run scripts through their shebangs rather than invoking Bash scripts with `sh`.
 
 The [virtual-dsm project](https://github.com/vdsm/virtual-dsm) can boot selected DSM 7 `.pat` releases, but requires a Linux KVM host; its README says Docker Desktop on macOS is unsupported. Its DSM 6 path has an [open D-Bus stability issue](https://github.com/vdsm/virtual-dsm/issues/1122), so validate DSM 6 on real hardware. The project further restricts use of Virtual DSM to official Synology hardware. Use actual NAS hardware for package, service-control, and kernel-module integration testing; keep every test to DSM 6 or DSM 7.
 
@@ -264,14 +264,14 @@ The [virtual-dsm project](https://github.com/vdsm/virtual-dsm) can boot selected
 
 Run these checks only in a disposable, snapshot-backed environment with the Synology Docker package already installed:
 
-| DSM major | Suggested coverage | Environment |
-| ---------- | ------------------ | ----------- |
-| 6 | Latest DSM 6.2.4 update | Real Synology hardware |
-| 7 | DSM 7.1 and 7.2 | Real hardware or supported Virtual DSM/KVM host |
+| DSM major | Suggested coverage      | Environment                                     |
+| --------- | ----------------------- | ----------------------------------------------- |
+| 6         | Latest DSM 6.2.4 update | Real Synology hardware                          |
+| 7         | DSM 7.1 and 7.2         | Real hardware or supported Virtual DSM/KVM host |
 
 For each environment, run `sh tests/check-dsm-runtime.sh 29` (using the planned Engine major), record `docker -v` and `docker-compose -v`, start a small representative workload, then run `sudo ./syno_docker_update.sh update`. Verify the service is started, both version commands succeed, and the workload is healthy. Test rollback separately with a named backup and verify the restored versions. Do not treat a successful Virtual DSM run as coverage of physical kernel-module or driver compatibility.
 
-An update stops rather than silently downgrading if release detection fails or an automatic target is older than the installed version. To deliberately downgrade during `update`, specify `--docker VERSION` or `--compose VERSION` together with `--force`; an older offline Docker archive passed to `install PATH` also requires `--force`. Required module and AppArmor preparation is still performed. Backups are private and are never overwritten. `--stage update` leaves downloads in the printed private directory so they can be inspected or passed to `install PATH`. If a change fails after the service has stopped, the script reports the backup path and exits nonzero; it does not automatically restart mixed binaries. Diagnose the failure and restore the backup with `sudo ./syno_docker_update.sh --backup /path/to/backup.tgz restore` before retrying.
+An update stops rather than silently downgrading if release detection fails or an automatic target is older than the installed version. To deliberately downgrade during `update`, specify `--docker VERSION` or `--compose VERSION` together with `--force`; an older offline Docker archive passed to `install PATH` also requires `--force`. Required module and AppArmor preparation is still performed. Backups are private and are never overwritten. `--stage update` leaves downloads in the printed private directory so you can inspect them or pass them to `install PATH`. If a change fails after the service has stopped, the script reports the backup path and exits nonzero; it does not automatically restart mixed binaries. Diagnose the failure and restore the backup with `sudo ./syno_docker_update.sh --backup /path/to/backup.tgz restore` before retrying.
 
 ## Contributing
 
@@ -287,7 +287,7 @@ PRs are **VERY** welcome here. Many of the recent updates have been contributed 
 
 - Original work by [@markdumay](https://github.com/markdumay)
 - Extensive testing by [@mrmuiz](https://github.com/mrmuiz)
-- Kernel 5.x runc issue / resolution and additional repo contributions and maintenance by [@bslatyer](https://github.com/bslatyer)
+- Kernel 5.x runc issue/resolution and additional repo contributions and maintenance by [@bslatyer](https://github.com/bslatyer)
 - Network‑pain endurance by [@CodeNodeNomad](https://github.com/CodeNodeNomad)
 - Awesome IP Forward rules fix and AppArmor update for v29+ by [@Salvora](https://github.com/Salvora)
 - AppArmor update / fix by [@Auddis](https://github.com/Auddis)

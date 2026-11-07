@@ -56,7 +56,7 @@ case "$dsm_major_version" in
 esac
 
 if [ "$target_docker_major" -ge 28 ]; then
-  for tool in insmod lsmod iptables; do
+  for tool in insmod lsmod iptables sha256sum; do
     check_command "$tool"
   done
   if [ -x /bin/get_key_value ]; then

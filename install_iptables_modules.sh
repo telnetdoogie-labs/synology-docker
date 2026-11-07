@@ -43,8 +43,11 @@ INSERT="${INSERT}   insmod ${MODULES_FOLDER}/${IP4MODULE}\n"
 INSERT="${INSERT}   insmod ${MODULES_FOLDER}/${IP6MODULE}"
 KERNEL_VERSION=$(uname -r)
 PLATFORM_VERSION=$(/bin/get_key_value /etc.defaults/synoinfo.conf platform_name)
-IP4DL="https://raw.githubusercontent.com/telnetdoogie-labs/synology-kernelmodules/main/compiled_modules/${KERNEL_VERSION}/${PLATFORM_VERSION}/${IP4MODULE}"
-IP6DL="https://raw.githubusercontent.com/telnetdoogie-labs/synology-kernelmodules/main/compiled_modules/${KERNEL_VERSION}/${PLATFORM_VERSION}/${IP6MODULE}"
+MODULES_URL="https://raw.githubusercontent.com/telnetdoogie-labs/synology-kernelmodules/main/compiled_modules"
+IP4DL="${MODULES_URL}/${KERNEL_VERSION}/${PLATFORM_VERSION}/${IP4MODULE}"
+IP6DL="${MODULES_URL}/${KERNEL_VERSION}/${PLATFORM_VERSION}/${IP6MODULE}"
+# Published next to the modules, with paths relative to compiled_modules/
+SUMSDL="${MODULES_URL}/SHA256SUMS"
 
 echo "Kernel Version: ${KERNEL_VERSION}"
 echo "Platform: ${PLATFORM_VERSION}"
@@ -155,12 +158,35 @@ check_all() {
   echo
 }
 
+# Checks a downloaded module against its line in SHA256SUMS before it's installed.
+verify_module_checksum() {
+  local file=$1 module=$2 sums=$3 path expected actual
+  path="${KERNEL_VERSION}/${PLATFORM_VERSION}/${module}"
+  expected=$(awk -v path="$path" '$2 == path || $2 == "*" path { print $1; exit }' "$sums")
+  if [ -z "$expected" ]; then
+    echo
+    echo "   No published checksum for ${path}, so the download can't be verified."
+    return 1
+  fi
+  actual=$(sha256sum "$file" | awk '{ print $1 }') || return 1
+  if [ "$actual" != "$expected" ]; then
+    echo
+    echo "   ${module} doesn't match its published checksum. The download may be corrupted,"
+    echo "   or the modules were updated while downloading. Run the script again."
+    return 1
+  fi
+}
+
 download_and_place_modules() (
   echo "Downloading and placing modules in /lib/modules folder..."
   module_download_dir=$(mktemp -d "${TMPDIR:-/tmp}/synology-docker-modules.XXXXXX") || return 1
   trap 'rm -rf "$module_download_dir"' EXIT
   curl_https_modules -fsSL --connect-timeout 10 --max-time 120 "$IP4DL" -o "$module_download_dir/$IP4MODULE" && echo -n "." || return 1
   curl_https_modules -fsSL --connect-timeout 10 --max-time 120 "$IP6DL" -o "$module_download_dir/$IP6MODULE" && echo -n "." || return 1
+  curl_https_modules -fsSL --connect-timeout 10 --max-time 30 "$SUMSDL" -o "$module_download_dir/SHA256SUMS" && echo -n "." || return 1
+  # Nothing is copied into place until both modules match.
+  verify_module_checksum "$module_download_dir/$IP4MODULE" "$IP4MODULE" "$module_download_dir/SHA256SUMS" && echo -n "." || return 1
+  verify_module_checksum "$module_download_dir/$IP6MODULE" "$IP6MODULE" "$module_download_dir/SHA256SUMS" && echo -n "." || return 1
   cp -f "$module_download_dir/$IP4MODULE" "$MODULES_FOLDER/$IP4MODULE" && echo -n "." || return 1
   cp -f "$module_download_dir/$IP6MODULE" "$MODULES_FOLDER/$IP6MODULE" && echo -n "." || return 1
   chown root:root "$MODULES_FOLDER/$IP4MODULE" "$MODULES_FOLDER/$IP6MODULE" && echo -n "." || return 1

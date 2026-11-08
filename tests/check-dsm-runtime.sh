@@ -32,9 +32,12 @@ fi
 
 dsm_major_version=$(awk -F= '$1 == "majorversion" { gsub(/"/, "", $2); print $2; exit }' /etc.defaults/VERSION 2>/dev/null)
 printf 'DSM major version: %s\n' "${dsm_major_version:-unknown}"
+# The service tools are checked for existence, not execute permission: DSM 6 ships
+# synoservicectl as root-only (0700), and the probe usually runs without sudo. The
+# updater itself always runs as root.
 case "$dsm_major_version" in
   6)
-    if [ -x /usr/syno/sbin/synoservicectl ] || command -v synoservicectl >/dev/null 2>&1; then
+    if [ -f /usr/syno/sbin/synoservicectl ] || command -v synoservicectl >/dev/null 2>&1; then
       printf 'OK      DSM 6 synoservicectl found\n'
     else
       printf 'MISSING DSM 6 synoservicectl\n'
@@ -42,7 +45,7 @@ case "$dsm_major_version" in
     fi
     ;;
   7)
-    if [ -x /usr/syno/bin/synopkg ] || command -v synopkg >/dev/null 2>&1; then
+    if [ -f /usr/syno/bin/synopkg ] || command -v synopkg >/dev/null 2>&1; then
       printf 'OK      DSM 7 synopkg found\n'
     else
       printf 'MISSING DSM 7 synopkg\n'

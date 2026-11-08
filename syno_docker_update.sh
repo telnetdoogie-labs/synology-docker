@@ -1568,6 +1568,26 @@ fail_start() {
 }
 
 #======================================================================================================================
+# Checks the iptables raw modules Docker 28+ needs are already in place or can be downloaded, before anything is
+# downloaded, backed up or changed. Read-only; install_modules() still installs them later in the run.
+#======================================================================================================================
+# Globals:
+#   - install_iptables_modules
+#   - stage
+#   - target_docker_version
+# Outputs:
+#   Terminates with non-zero exit code if the modules can't be obtained for this platform and kernel.
+#======================================================================================================================
+validate_iptables_modules() {
+  if [ "${install_iptables_modules}" != 'true' ] || [ "${stage}" = 'true' ]; then
+    return
+  fi
+  echo "Checking the iptables kernel modules Docker ${target_docker_version} needs..."
+  "${SCRIPT_DIR}/install_iptables_modules.sh" --check ||
+    terminate "Docker ${target_docker_version} can't run without these modules. Nothing was downloaded or changed."
+}
+
+#======================================================================================================================
 # Installs kernel modules for v28+
 #======================================================================================================================
 # Globals:
@@ -1828,6 +1848,7 @@ main() {
       validate_db_logger
       define_setup_steps
       validate_forwarding_anchor
+      validate_iptables_modules
       confirm_operation
       execute_backup
       execute_extract_bin
@@ -1888,6 +1909,7 @@ main() {
       define_update
       validate_db_logger
       validate_forwarding_anchor
+      validate_iptables_modules
       confirm_operation
       execute_backup
       execute_download_bin

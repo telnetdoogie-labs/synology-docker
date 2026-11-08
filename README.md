@@ -57,7 +57,7 @@ At a high level:
 2. Backs up your existing Docker install
 3. Stops Docker safely
 4. Replaces binaries & config
-5. For Docker 28+, installs the `iptable_raw` / `ip6table_raw` kernel modules and loads them before Docker starts (a systemd drop-in on DSM 7, so it survives Container Manager updates). If you're already on the latest Docker, `sudo ./syno_docker_update.sh only_script` moves an older setup over to the drop-in
+5. For Docker 28+, installs the `iptable_raw` / `ip6table_raw` kernel modules and loads them before Docker starts (a systemd drop-in on DSM 7, so it survives Container Manager updates). If you're already on the latest Docker, `sudo ./syno_docker_update.sh only_script` moves an older setup over to the drop-in. Before anything is downloaded or backed up, the update checks that modules are installed or published for your kernel and platform, and stops if they aren't
 6. Restarts Docker
 
 Everything is scripted. Nothing is magic. Rollbacks are built‑in.

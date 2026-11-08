@@ -261,6 +261,21 @@ explain_modules_unavailable() {
   echo "   We cannot continue without these modules."
 }
 
+# Read-only check run by syno_docker_update.sh before it downloads or changes anything: succeeds when the modules are
+# already in place or can be downloaded for this platform and kernel, and explains why not otherwise.
+check_modules_obtainable() {
+  if [ "$(module_files_present)" = 'true' ]; then
+    echo "   The kernel modules are already in place."
+    return 0
+  fi
+  if [ "$(modules_available_for_download)" = 'true' ]; then
+    echo "   The kernel modules are available for download."
+    return 0
+  fi
+  explain_modules_unavailable
+  return 1
+}
+
 run_modules() {
 # Start the main flow
 check_all
@@ -325,5 +340,9 @@ check_all
 
 if [ "${BASH_SOURCE[0]}" == "$0" ]; then
   initialize_modules
+  if [ "${1:-}" = '--check' ]; then
+    check_modules_obtainable
+    exit $?
+  fi
   run_modules
 fi

@@ -15,3 +15,7 @@ listing=$("$repo_dir/syno_docker_list_containers.sh")
 # Expect: a heading, but no spurious recreation hint.
 expect_contains "$listing" Container 'empty inventory keeps the listing heading'
 expect_not_contains "$listing" 'docker run' 'empty inventory has no recreation command'
+
+# Expect: the heading is underlined to the full width of each column name.
+expect_eq '---------  ---------------- -------' "$(printf '%s\n' "$listing" | sed -n 3p)" \
+  'empty inventory heading is underlined to full width'

@@ -821,6 +821,24 @@ validate_offline_target() {
 }
 
 #======================================================================================================================
+# Discards anything typed or pasted into the terminal before a prompt is shown, so a pasted block can't answer it.
+# Only applies when stdin is a terminal; piped or redirected answers are left alone.
+#======================================================================================================================
+# Outputs:
+#   Writes a notice to stdout when input was discarded.
+#======================================================================================================================
+discard_pending_input() {
+  [ -t 0 ] || return 0
+  local discarded=0 _
+  while read -r -t 0.1 _; do
+    discarded=$((discarded + 1))
+  done
+  if [ "${discarded}" -gt 0 ]; then
+    echo "Ignored ${discarded} line(s) typed or pasted before this prompt."
+  fi
+}
+
+#======================================================================================================================
 # Prompts the user to confirm the operation, unless forced.
 #======================================================================================================================
 # Globals:
@@ -840,6 +858,7 @@ confirm_operation() {
     [ "${skip_driver_update}" = "false" ]  && echo "  - Docker daemon log driver"
     echo
 
+    discard_pending_input
     while true; do
       printf "Are you sure you want to continue? [y/N] "
       read -r yn

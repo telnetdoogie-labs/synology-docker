@@ -5,6 +5,17 @@ curl_https_modules() {
   curl "$@" "${MODULE_CURL_HTTPS_FLAGS[@]}"
 }
 
+# Prints the platform (e.g. 'apollolake') from synoinfo.conf. DSM 7 has 'platform_name';
+# DSM 6 doesn't, but its 'unique' key carries the platform, e.g. 'synology_apollolake_918+'.
+detect_platform() {
+  local synoinfo=${1:-/etc.defaults/synoinfo.conf} platform
+  platform=$(/bin/get_key_value "$synoinfo" platform_name)
+  if [ -z "$platform" ]; then
+    platform=$(/bin/get_key_value "$synoinfo" unique | cut -d_ -f2)
+  fi
+  echo "$platform"
+}
+
 initialize_modules() {
 # Test if script has root privileges, exit otherwise
 id=$(id -u)
@@ -42,7 +53,7 @@ INSERT="${INSERT}   # Load raw modules\n"
 INSERT="${INSERT}   insmod ${MODULES_FOLDER}/${IP4MODULE}\n"
 INSERT="${INSERT}   insmod ${MODULES_FOLDER}/${IP6MODULE}"
 KERNEL_VERSION=$(uname -r)
-PLATFORM_VERSION=$(/bin/get_key_value /etc.defaults/synoinfo.conf platform_name)
+PLATFORM_VERSION=$(detect_platform)
 MODULES_URL="https://raw.githubusercontent.com/telnetdoogie-labs/synology-kernelmodules/main/compiled_modules"
 IP4DL="${MODULES_URL}/${KERNEL_VERSION}/${PLATFORM_VERSION}/${IP4MODULE}"
 IP6DL="${MODULES_URL}/${KERNEL_VERSION}/${PLATFORM_VERSION}/${IP6MODULE}"

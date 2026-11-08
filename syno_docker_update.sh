@@ -72,6 +72,8 @@ fi
 if [ -z "$SYNO_DOCKER_DIR" ]; then
   terminate "Docker (or ContainerManager) folder was not found."
 fi
+# DSM 6's synoservicectl names package services 'pkgctl-<package>'; the bare package name is rejected.
+readonly SYNO_DOCKER_SERVICE_DSM6="pkgctl-${SYNO_DOCKER_SERV_NAME}"
 readonly SYNO_DOCKER_BIN_PATH="${SYNO_DOCKER_DIR}/target/usr"
 readonly SYNO_DOCKER_BIN="${SYNO_DOCKER_BIN_PATH}/bin"
 readonly SYNO_DOCKER_SCRIPT_PATH="${SYNO_DOCKER_DIR}/scripts"
@@ -950,7 +952,7 @@ get_syno_status() {
 #======================================================================================================================
 get_syno_status_raw() {
   case "${dsm_major_version}" in
-    "6") "$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")" --status "${SYNO_DOCKER_SERV_NAME}" 2>&1 ;;
+    "6") "$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")" --status "${SYNO_DOCKER_SERVICE_DSM6}" 2>&1 ;;
     *)   "$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")" status "${SYNO_DOCKER_SERV_NAME}" 2>&1 ;;
   esac
 }
@@ -968,7 +970,7 @@ syno_ctl() {
   [ "${action}" = 'start' ] && limit="${SYNO_SERVICE_START_TIMEOUT}"
   case "${dsm_major_version}" in
     "6") timeout --foreground "${limit}" "$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")" \
-           "--${action}" "${SYNO_DOCKER_SERV_NAME}" ;;
+           "--${action}" "${SYNO_DOCKER_SERVICE_DSM6}" ;;
     *)   timeout --foreground "${limit}" "$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")" \
            "${action}" "${SYNO_DOCKER_SERV_NAME}" ;;
   esac
@@ -979,7 +981,7 @@ syno_ctl() {
 #======================================================================================================================
 syno_start_cmd() {
   if [ "${dsm_major_version}" = "6" ] ; then
-    echo "sudo synoservicectl --start ${SYNO_DOCKER_SERV_NAME}"
+    echo "sudo synoservicectl --start ${SYNO_DOCKER_SERVICE_DSM6}"
   else
     echo "sudo synopkg start ${SYNO_DOCKER_SERV_NAME}"
   fi
@@ -987,7 +989,7 @@ syno_start_cmd() {
 
 syno_status_cmd() {
   if [ "${dsm_major_version}" = "6" ] ; then
-    echo "sudo synoservicectl --status ${SYNO_DOCKER_SERV_NAME}"
+    echo "sudo synoservicectl --status ${SYNO_DOCKER_SERVICE_DSM6}"
   else
     echo "sudo synopkg status ${SYNO_DOCKER_SERV_NAME}"
   fi

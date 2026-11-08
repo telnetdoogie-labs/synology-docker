@@ -72,6 +72,8 @@ fi
 if [ -z "$SYNO_DOCKER_DIR" ]; then
   terminate "Docker (or ContainerManager) folder was not found."
 fi
+# DSM 6's synoservicectl names package services 'pkgctl-<package>'; the bare package name is rejected.
+readonly SYNO_DOCKER_SERVICE_DSM6="pkgctl-${SYNO_DOCKER_SERV_NAME}"
 readonly SYNO_DOCKER_BIN_PATH="${SYNO_DOCKER_DIR}/target/usr"
 readonly SYNO_DOCKER_BIN="${SYNO_DOCKER_BIN_PATH}/bin"
 readonly SYNO_DOCKER_SCRIPT_PATH="${SYNO_DOCKER_DIR}/scripts"
@@ -819,6 +821,24 @@ validate_offline_target() {
 }
 
 #======================================================================================================================
+# Discards anything typed or pasted into the terminal before a prompt is shown, so a pasted block can't answer it.
+# Only applies when stdin is a terminal; piped or redirected answers are left alone.
+#======================================================================================================================
+# Outputs:
+#   Writes a notice to stdout when input was discarded.
+#======================================================================================================================
+discard_pending_input() {
+  [ -t 0 ] || return 0
+  local discarded=0 _
+  while read -r -t 0.1 _; do
+    discarded=$((discarded + 1))
+  done
+  if [ "${discarded}" -gt 0 ]; then
+    echo "Ignored ${discarded} line(s) typed or pasted before this prompt."
+  fi
+}
+
+#======================================================================================================================
 # Prompts the user to confirm the operation, unless forced.
 #======================================================================================================================
 # Globals:
@@ -838,6 +858,7 @@ confirm_operation() {
     [ "${skip_driver_update}" = "false" ]  && echo "  - Docker daemon log driver"
     echo
 
+    discard_pending_input
     while true; do
       printf "Are you sure you want to continue? [y/N] "
       read -r yn
@@ -950,7 +971,7 @@ get_syno_status() {
 #======================================================================================================================
 get_syno_status_raw() {
   case "${dsm_major_version}" in
-    "6") "$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")" --status "${SYNO_DOCKER_SERV_NAME}" 2>&1 ;;
+    "6") "$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")" --status "${SYNO_DOCKER_SERVICE_DSM6}" 2>&1 ;;
     *)   "$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")" status "${SYNO_DOCKER_SERV_NAME}" 2>&1 ;;
   esac
 }
@@ -968,7 +989,7 @@ syno_ctl() {
   [ "${action}" = 'start' ] && limit="${SYNO_SERVICE_START_TIMEOUT}"
   case "${dsm_major_version}" in
     "6") timeout --foreground "${limit}" "$(resolve_syno_bin "synoservicectl" "${SYNOSERVICECTL_BIN}")" \
-           "--${action}" "${SYNO_DOCKER_SERV_NAME}" ;;
+           "--${action}" "${SYNO_DOCKER_SERVICE_DSM6}" ;;
     *)   timeout --foreground "${limit}" "$(resolve_syno_bin "synopkg" "${SYNOPKG_BIN}")" \
            "${action}" "${SYNO_DOCKER_SERV_NAME}" ;;
   esac
@@ -979,7 +1000,7 @@ syno_ctl() {
 #======================================================================================================================
 syno_start_cmd() {
   if [ "${dsm_major_version}" = "6" ] ; then
-    echo "sudo synoservicectl --start ${SYNO_DOCKER_SERV_NAME}"
+    echo "sudo synoservicectl --start ${SYNO_DOCKER_SERVICE_DSM6}"
   else
     echo "sudo synopkg start ${SYNO_DOCKER_SERV_NAME}"
   fi
@@ -987,7 +1008,7 @@ syno_start_cmd() {
 
 syno_status_cmd() {
   if [ "${dsm_major_version}" = "6" ] ; then
-    echo "sudo synoservicectl --status ${SYNO_DOCKER_SERV_NAME}"
+    echo "sudo synoservicectl --status ${SYNO_DOCKER_SERVICE_DSM6}"
   else
     echo "sudo synopkg status ${SYNO_DOCKER_SERV_NAME}"
   fi

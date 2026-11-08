@@ -5,6 +5,8 @@ SCRIPT_DIR=$(dirname "$(realpath "$0")")
 readonly SCRIPT_DIR
 readonly NOT_COMPOSE="!---not_managed_by_compose---!"
 readonly MAYBE_PORTAINER="!---maybe_managed_by_portainer---!"
+readonly CONTAINER_HEADER="Container"
+readonly LOCATION_HEADER="Compose_Location"
 
 # Store container information in an array.
 # Stopped containers are included so containers stuck on the removed 'db'
@@ -30,9 +32,11 @@ done < <(printf "%s\n" ${containers_info[@]+"${containers_info[@]}"} | sort -t "
 # Original with -u - this unfortunately hides portainer containers.
 # IFS=$'\n' sorted_containers_info=($(printf "%s\n" "${containers_info[@]}" | sort -t -u " " -k 2))
 
-# Calculate the maximum length for the container names and compose locations
-max_container_length=0
-max_location_length=0
+# Calculate the maximum length for the container names and compose locations.
+# Columns start at their header's width, so the header lines up even when names
+# are short or there are no containers.
+max_container_length=${#CONTAINER_HEADER}
+max_location_length=${#LOCATION_HEADER}
 max_logger_length=7
 for info in ${sorted_containers_info[@]+"${sorted_containers_info[@]}"}; do
   container=${info%% *}
@@ -47,7 +51,7 @@ done
 # Print the header
 echo
 printf "%-${max_container_length}s  %-${max_location_length}s %-${max_logger_length}s\n" \
-  "Container" "Compose_Location" "Logger"
+  "$CONTAINER_HEADER" "$LOCATION_HEADER" "Logger"
 printf "%-${max_container_length}s  %-${max_location_length}s %-${max_logger_length}s\n" \
   "$(printf '%*s' "${max_container_length}" '' | tr ' ' '-')" \
   "$(printf '%*s' "${max_location_length}" '' | tr ' ' '-')" \

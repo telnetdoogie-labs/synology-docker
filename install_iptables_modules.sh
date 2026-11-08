@@ -246,6 +246,20 @@ remove_script_insert() {
   sed -i '/^[[:space:]]*insmod \/lib\/modules\/ip6\{0,1\}table_raw\.ko[[:space:]]*$/d' "${FILE}"
 }
 
+# Explains why the update can't continue without modules. No modules are published for
+# DSM 6 kernels, so DSM 6 is pointed at the newest Docker Engine that doesn't need them.
+explain_modules_unavailable() {
+  local version_file=${1:-/etc.defaults/VERSION} dsm_major
+  dsm_major=$(awk -F= '$1 == "majorversion" { gsub(/"/, "", $2); print $2; exit }' "$version_file" 2>/dev/null)
+  echo "   The kernel modules for your platform and kernel are not available for download."
+  if [ "$dsm_major" = "6" ]; then
+    echo "   No modules are published for DSM 6 kernels, so the newest Docker Engine DSM 6 can use is 27.x."
+    echo "   Run the update again with a 27.x target, for example: --docker 27.5.1"
+  else
+    echo "   You can compile them yourself and place them in /lib/modules or request a compile for your platform"
+  fi
+  echo "   We cannot continue without these modules."
+}
 
 run_modules() {
 # Start the main flow
@@ -256,9 +270,7 @@ if [[ $KOS_PLACED != "true" ]]; then
   # the files are not in place. We will need to download them.
   if [[ $MOD_DL_AVAIL != "true" ]]; then
     # they are not available for download.
-    echo "   The kernel modules for your platform and kernel are not available for download."
-    echo "   You can compile them yourself and place them in /lib/modules or request a compile for your platform"
-    echo "   We cannot continue without these modules."
+    explain_modules_unavailable
     exit 1
   fi
 

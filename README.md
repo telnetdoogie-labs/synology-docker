@@ -248,7 +248,7 @@ The supported test scope is DSM major versions 6 and 7 only. The mocked cases co
 ### Validation status
 
 - **DSM 7:** an earlier hardening revision was live-tested on DSM 7.4.1 with Docker Engine 29.8.2 and Docker Compose 5.6.0, including kernel-module/AppArmor preparation and `db`-logger recovery workflows. This upstream-aligned revision has not yet been retested on a NAS.
-- **DSM 6:** implemented and covered by mocked service-control tests, but **not yet validated on physical hardware**. Treat DSM 6 support as best-effort until a real DSM 6 NAS passes the runtime probe, update, workload, and rollback checks.
+- **DSM 6:** the runtime probe, `logger`, update to Docker 27.5.1, workload, rollback, and `stop`/`start` pass on DSM 6.2.4-25556 Update 8 (DS918+) running in a bootloader VM, but this is **not yet validated on physical hardware**. Treat DSM 6 support as best-effort until a real DSM 6 NAS passes the same checks. **Docker Engine 27.x is the newest DSM 6 can use:** Engine 28+ needs kernel modules, and none are published for DSM 6 kernels, so a 28+ update stops before changing anything. Use `--docker 27.5.1` (or another 27.x release).
 
 Before running the updater on a NAS, check its runtime prerequisites with:
 

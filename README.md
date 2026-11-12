@@ -58,7 +58,8 @@ At a high level:
 3. Stops Docker safely
 4. Replaces binaries & config
 5. For Docker 28+, installs the `iptable_raw` / `ip6table_raw` kernel modules and loads them before Docker starts (a systemd drop-in on DSM 7, so it survives Container Manager updates). If you're already on the latest Docker, `sudo ./syno_docker_update.sh only_script` moves an older setup over to the drop-in. Before anything is downloaded or backed up, the update checks that modules are installed or published for your kernel and platform, and stops if they aren't
-6. Restarts Docker
+6. Keeps Docker's firewall rules in effect. Container Manager's startup script restores the `FORWARD` jumps to `DOCKER-USER` and `DOCKER-FORWARD` once Docker is up, and starts a small guard (`syno_docker_forward_guard.sh`, copied next to that script) that puts them back whenever DSM drops them. With the DSM firewall enabled, DSM rewrites the firewall a few seconds after every container start or stop and drops those jumps; without them, `DOCKER-USER` rules are ignored and `internal: true` networks are not isolated. If you're already on the latest Docker, run `sudo ./syno_docker_update.sh only_script` and then restart Container Manager to get the guard
+7. Restarts Docker
 
 Everything is scripted. Nothing is magic. Rollbacks are built‑in.
 

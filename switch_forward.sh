@@ -8,8 +8,8 @@ if [ "${id}" -ne 0 ]; then
 fi
 
 # Define the lines to insert
-FORWARD_ACCEPT="            # Added by docker update\n          iptables -P FORWARD ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD"
-DOCKER_FORWARD="            # Added by docker update\n          iptables -I FORWARD -i docker0 -j ACCEPT\n          iptables -I FORWARD -o docker0 -j ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD"
+FORWARD_ACCEPT="            # Added by docker update\n          iptables -P FORWARD ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD\n          /bin/sh /var/packages/ContainerManager/scripts/syno_docker_forward_guard.sh </dev/null >/dev/null 2>\&1 \&"
+DOCKER_FORWARD="            # Added by docker update\n          iptables -I FORWARD -i docker0 -j ACCEPT\n          iptables -I FORWARD -o docker0 -j ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD\n          /bin/sh /var/packages/ContainerManager/scripts/syno_docker_forward_guard.sh </dev/null >/dev/null 2>\&1 \&"
 
 # File to edit
 file="/var/packages/ContainerManager/scripts/start-stop-status"
@@ -34,10 +34,19 @@ if ! grep -qE "${match}" "${file}"; then
   exit 1
 fi
 
+# Install the FORWARD guard the block starts. With the DSM firewall enabled, DSM drops the FORWARD jumps into Docker's
+# chains after every container network change; the guard puts them back while dockerd runs.
+guard="${file%/*}/syno_docker_forward_guard.sh"
+if ! cp "$(dirname "$0")/syno_docker_forward_guard.sh" "${guard}" || ! chmod 755 "${guard}"; then
+  echo "Could not install ${guard}. ${file} left unmodified."
+  exit 1
+fi
+
 # Remove the existing forwarding block, wherever it landed. Earlier versions inserted it before
 # 'start_docker_daemon', where the DOCKER-FORWARD chain does not yet exist. The insmod block
 # sharing the same comment is left untouched.
 sed -i '/^[[:space:]]*iptables -C FORWARD -j DOCKER-FORWARD/d' "${file}"
+sed -i '/syno_docker_forward_guard\.sh/d' "${file}"
 sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -P FORWARD ACCEPT/d}' "${file}"
 sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -I FORWARD -i docker0/d}' "${file}"
 sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "${file}"
@@ -69,3 +78,4 @@ else
   iptables -P FORWARD ACCEPT
   iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD
 fi
+echo "The FORWARD guard starts the next time Container Manager starts."

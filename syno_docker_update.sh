@@ -511,10 +511,10 @@ validate_backup_filename() {
   fi
 
   # split into directory and filename if applicable
-  # TODO: test
   basepath=$(dirname "${docker_backup_filename}")
   if [ -z "${basepath}" ] || [ "${basepath}" != "." ]; then
-    abs_path_and_file=$(readlink -f "${docker_backup_filename}")
+    abs_path_and_file=$(readlink -f "${docker_backup_filename}") && [ -n "${abs_path_and_file}" ] ||
+      terminate "Backup directory not found: ${basepath}"
     backup_dir=$(dirname "${abs_path_and_file}")
     docker_backup_filename=$(basename "${abs_path_and_file}")
   fi

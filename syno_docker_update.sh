@@ -31,6 +31,7 @@ validate_dependencies(){
     "container_recreate.sh"
     "install_apparmor_profile.sh"
     "install_iptables_modules.sh"
+    "syno_docker_forward_guard.sh"
     "syno_docker_list_containers.sh"
     "syno_docker_switch_logger.sh")
   # Loop through each file in the array and check if it exists
@@ -80,7 +81,8 @@ readonly SYNO_DOCKER_SCRIPT_PATH="${SYNO_DOCKER_DIR}/scripts"
 readonly SYNO_DOCKER_SCRIPT="${SYNO_DOCKER_SCRIPT_PATH}/start-stop-status"
 readonly SYNO_DOCKER_JSON_PATH="${SYNO_DOCKER_DIR}/etc"
 readonly SYNO_DOCKER_JSON="${SYNO_DOCKER_JSON_PATH}/dockerd.json"
-readonly SYNO_DOCKER_SCRIPT_FORWARDING="            # Added by docker update\n          iptables -P FORWARD ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD"
+readonly SYNO_DOCKER_FORWARD_GUARD="${SYNO_DOCKER_SCRIPT_PATH}/syno_docker_forward_guard.sh"
+readonly SYNO_DOCKER_SCRIPT_FORWARDING="            # Added by docker update\n          iptables -P FORWARD ACCEPT\n          iptables -C FORWARD -j DOCKER-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j DOCKER-FORWARD\n          /bin/sh ${SYNO_DOCKER_FORWARD_GUARD} </dev/null >/dev/null 2>\&1 \&"
 readonly SYNO_SERVICE_STOP_TIMEOUT='10m'
 readonly SYNO_STATUS_POLL_INTERVAL=5
 readonly SYNOPKG_BIN='/usr/syno/bin/synopkg'
@@ -1397,6 +1399,22 @@ execute_update_log() {
 }
 
 #======================================================================================================================
+# Copies syno_docker_forward_guard.sh next to start-stop-status, replacing it in one step.
+#======================================================================================================================
+# Outputs:
+#   Installed forward guard; returns nonzero if any step fails, leaving an existing guard in place.
+#======================================================================================================================
+install_forward_guard() {
+  local guard_temp
+  guard_temp=$(mktemp "${SYNO_DOCKER_FORWARD_GUARD}.XXXXXX") || return 1
+  if ! cp "${SCRIPT_DIR}/syno_docker_forward_guard.sh" "$guard_temp" || ! chmod 755 "$guard_temp" ||
+    ! mv "$guard_temp" "$SYNO_DOCKER_FORWARD_GUARD"; then
+    rm -f "$guard_temp"
+    return 1
+  fi
+}
+
+#======================================================================================================================
 # Updates Synology's start-stop-status script for Docker to ensure IP forwarding is enabled, unless 'stage' is set to
 # true.
 #
@@ -1406,11 +1424,15 @@ execute_update_log() {
 # FORWARD policy to DROP, leaving a DROP policy with no jump - published container ports become unreachable from other
 # hosts after every clean boot, while working again after any subsequent Container Manager restart (because dockerd
 # already exists by then). That masking is what makes the bug look intermittent when it is actually deterministic.
+#
+# The block also starts syno_docker_forward_guard.sh, copied next to start-stop-status. With the DSM firewall enabled,
+# DSM rewrites the filter table after every container network change and drops the FORWARD jumps into Docker's chains
+# (issue #134); the guard puts them back while dockerd runs.
 #======================================================================================================================
 # Globals:
 #   - stage
 # Outputs:
-#   Updated start-stop-status script.
+#   Updated start-stop-status script and installed forward guard.
 #======================================================================================================================
 validate_forwarding_anchor() {
   if [ "$command" != 'only_script' ] && [ "$skip_docker_update" = 'true' ]; then
@@ -1443,11 +1465,17 @@ execute_update_script() {
       rm -f "$script_temp"
       terminate "Could not copy Docker startup script"
     fi
+    # Install the guard before the startup script that launches it.
+    install_forward_guard || {
+      rm -f "$script_temp"
+      terminate "Could not install ${SYNO_DOCKER_FORWARD_GUARD}"
+    }
     # Remove any previously-inserted forwarding block, wherever it landed. Older versions of this script (and
     # fix_ipforward.sh / switch_forward.sh) inserted it before 'start_docker_daemon'. Only the iptables FORWARD lines
     # (and the comment directly above them) are removed; the identically-commented insmod block added by
     # install_iptables_modules.sh is left untouched.
     if ! sed -i '/^[[:space:]]*iptables -C FORWARD -j DOCKER-FORWARD/d' "$script_temp" ||
+      ! sed -i '/syno_docker_forward_guard\.sh/d' "$script_temp" ||
       ! sed -i '/^[[:space:]]*iptables -[ID] FORWARD -[io] docker0 -j ACCEPT[[:space:]]*$/d' "$script_temp" ||
       ! sed -i '/^[[:space:]]*# Added by docker update[[:space:]]*$/{N;/\n[[:space:]]*iptables -P FORWARD ACCEPT/d}' "$script_temp" ||
       ! sed -i '/^[[:space:]]*iptables -P FORWARD ACCEPT[[:space:]]*$/d' "$script_temp" ||
@@ -1463,6 +1491,7 @@ execute_update_script() {
       terminate "Could not replace Docker startup script"
     fi
     echo "Added IP forwarding configuration to ${file} (post daemon start)."
+    echo "The FORWARD guard starts the next time Container Manager starts."
   else
     echo "Skipping configuration in STAGE mode"
   fi

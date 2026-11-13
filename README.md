@@ -58,7 +58,8 @@ At a high level:
 3. Stops Docker safely
 4. Replaces binaries & config
 5. For Docker 28+, installs the `iptable_raw` / `ip6table_raw` kernel modules and loads them before Docker starts (a systemd drop-in on DSM 7, so it survives Container Manager updates). If you're already on the latest Docker, `sudo ./syno_docker_update.sh only_script` moves an older setup over to the drop-in. Before anything is downloaded or backed up, the update checks that modules are installed or published for your kernel and platform, and stops if they aren't
-6. Restarts Docker
+6. Keeps Docker's firewall rules in effect. Container Manager's startup script restores the `FORWARD` jumps to `DOCKER-USER` and `DOCKER-FORWARD` once Docker is up, and starts a small guard (`syno_docker_forward_guard.sh`, copied next to that script) that puts them back whenever DSM drops them, for IPv4 and IPv6. With the DSM firewall enabled, DSM rewrites the firewall a few seconds after every container start or stop and drops those jumps; without them, `DOCKER-USER` rules are ignored and `internal: true` networks are not isolated. If you're already on the latest Docker, run `sudo ./syno_docker_update.sh only_script` and then restart Container Manager to get the guard. See [DSM firewall and published ports](#dsm-firewall-and-published-ports) for where the jumps go
+7. Restarts Docker
 
 Everything is scripted. Nothing is magic. Rollbacks are built‑in.
 
@@ -187,6 +188,18 @@ sudo ./syno_docker_update.sh [OPTIONS] COMMAND
 | `--stage`           | Download and extract without installing; print the retained staging path            |
 | `--skip-iptables`   | Don't check for / install iptables modules                                          |
 | `--fuse-overlayfs`  | Switch storage to fuse-overlayfs (see below)                                        |
+
+## DSM firewall and published ports
+
+By default the guard puts Docker's `FORWARD` jumps first, ahead of DSM's `-j FORWARD_FIREWALL`. That is standard Docker behavior: Docker's rules accept traffic to published container ports before the DSM firewall sees it, so DSM firewall rules don't apply to those ports. Filter that traffic in `DOCKER-USER` instead.
+
+To make published ports pass the DSM firewall first and Docker's rules after it, put the jumps right after DSM's chain:
+
+```bash
+echo 'placement=after-firewall' | sudo tee /var/packages/ContainerManager/etc/syno_docker_forward_guard.conf
+```
+
+The guard reads this file on every check, so the change applies within a few seconds without a restart. Remove the file, or set `placement=first`, to go back. With the DSM firewall off there is no `FORWARD_FIREWALL` jump, and the jumps go first either way. Right after Container Manager starts, the jumps are briefly first until the guard moves them.
 
 ## fuse-overlayfs (volumes on `aufs` without overlay support)
 

@@ -12,7 +12,14 @@
 #   placement=after-firewall  jumps right after '-j FORWARD_FIREWALL', so traffic must pass the DSM firewall, then
 #                             Docker's rules. Without a FORWARD_FIREWALL jump (DSM firewall off), the same as 'first'.
 #
-# The updater copies this file next to start-stop-status. Run by hand with '--once' to repair the jumps a single time.
+# On 3.x kernels (DSM models still on 3.10) the guard also repairs Docker's bridges. Docker creates each bridge with its
+# own MAC address, and these kernels do not record an address given at creation as one of the bridge's own. The bridge
+# then drops every frame sent to it, so containers cannot reach their gateway, the LAN or the internet, and the NAS
+# cannot reach them (issue #116). Changing the address and changing it back makes the kernel record it. Each bridge
+# (docker0 and Docker's br-<network id>) is done once, including the ones created while dockerd runs.
+#
+# The updater copies this file next to start-stop-status. Run by hand with '--once' to repair the jumps, and on 3.x
+# kernels every Docker bridge, a single time.
 # Must stay POSIX sh: it runs from DSM's startup script.
 
 # Installed in <package>/scripts: the docker client is at <package>/target/usr/bin, the settings in <package>/etc.
@@ -20,6 +27,10 @@ docker_bin=${SYNO_DOCKER_GUARD_DOCKER:-${0%/*}/../target/usr/bin/docker}
 conf_file=${SYNO_DOCKER_GUARD_CONF:-${0%/*}/../etc/syno_docker_forward_guard.conf}
 pid_file=${SYNO_DOCKER_GUARD_PID_FILE:-/var/run/syno_docker_forward_guard.pid}
 interval=${SYNO_DOCKER_GUARD_INTERVAL:-2}
+kernel=${SYNO_DOCKER_GUARD_KERNEL:-$(uname -r)}
+sys_net=${SYNO_DOCKER_GUARD_SYS_NET:-/sys/class/net}
+# Bridges already repaired, one '<name> <ifindex> <address>' per line. A recreated bridge gets a new ifindex.
+bridge_state=${SYNO_DOCKER_GUARD_BRIDGE_STATE:-/var/run/syno_docker_forward_guard.bridges}
 
 # Sets 'rules', 'forward' (FORWARD rules in order, so line N is rule N) and 'firewall' (rule number of the
 # FORWARD_FIREWALL jump, empty without one) from '<tool>-save'. iptables-save is used because 'iptables -C' has given
@@ -108,9 +119,53 @@ ensure_all_jumps() {
   return "$status"
 }
 
+# Sets a bridge's address, quietly: the bridge can be removed between the check and the change.
+set_bridge_address() {
+  ip link set dev "$1" address "$2" 2>/dev/null
+}
+
+# On 3.x kernels, makes each Docker bridge accept frames sent to its own address (see the top of this file). Setting
+# the address a bridge already has does nothing on these kernels, so it is changed to a spare one and back. Containers
+# keep the right address for their gateway, as the bridge ends on the address it started with.
+ensure_bridge_addresses() {
+  case $kernel in
+    3.*) ;;
+    *) return 0 ;;
+  esac
+  for bridge_dir in "$sys_net"/docker0 "$sys_net"/br-????????????; do
+    [ -d "$bridge_dir/bridge" ] || continue
+    bridge=${bridge_dir##*/}
+    # Only Docker's own bridges: docker0, and 'br-' followed by the first 12 characters of a network ID.
+    case ${bridge#br-} in
+      *[!0-9a-f]*) [ "$bridge" = docker0 ] || continue ;;
+    esac
+    address=$(cat "$bridge_dir/address" 2>/dev/null) || continue
+    index=$(cat "$bridge_dir/ifindex" 2>/dev/null) || continue
+    [ -n "$address" ] && [ -n "$index" ] || continue
+    if [ -n "$bridge_state" ] && grep -qxF -- "$bridge $index $address" "$bridge_state" 2>/dev/null; then
+      continue
+    fi
+    spare=02:00:00:00:00:01
+    [ "$address" = "$spare" ] && spare=02:00:00:00:00:02
+    set_bridge_address "$bridge" "$spare" || continue
+    # The bridge must not be left on the spare address: try once more before giving up until the next check.
+    set_bridge_address "$bridge" "$address" || set_bridge_address "$bridge" "$address" || continue
+    if [ -n "$bridge_state" ] && ! echo "$bridge $index $address" >> "$bridge_state"; then
+      # Without the record every check would change the addresses again: stop repairing instead.
+      kernel=''
+      return 1
+    fi
+  done
+  return 0
+}
+
 if [ "${1:-}" = '--once' ]; then
+  # By hand, every bridge is repaired, whether or not a running guard has already done it.
+  bridge_state=''
   ensure_all_jumps
-  exit
+  status=$?
+  ensure_bridge_addresses || status=1
+  exit "$status"
 fi
 
 # Only one guard at a time: Container Manager can be restarted, and the helpers can be run more than once.
@@ -121,11 +176,13 @@ if [ -f "$pid_file" ]; then
   fi
 fi
 echo "$$" > "$pid_file" || exit 1
+# Bridges are repaired once per start of the guard, which is once per start of dockerd.
+: > "$bridge_state" || exit 1
 
 checker_pid=''
 cleanup() {
   [ -n "$checker_pid" ] && kill "$checker_pid" 2>/dev/null
-  rm -f "$pid_file"
+  rm -f "$pid_file" "$bridge_state"
 }
 trap cleanup EXIT
 trap 'exit 0' HUP INT TERM
@@ -145,6 +202,7 @@ while :; do
   (
     while :; do
       ensure_all_jumps
+      ensure_bridge_addresses
       sleep "$interval"
     done
   ) &

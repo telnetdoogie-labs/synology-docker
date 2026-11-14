@@ -201,6 +201,8 @@ echo 'placement=after-firewall' | sudo tee /var/packages/ContainerManager/etc/sy
 
 The guard reads this file on every check, so the change applies within a few seconds without a restart. Remove the file, or set `placement=first`, to go back. With the DSM firewall off there is no `FORWARD_FIREWALL` jump, and the jumps go first either way. Right after Container Manager starts, the jumps are briefly first until the guard moves them.
 
+On some units (seen on a DS220+ with DSM 7.4.1 and the DSM firewall enabled), DSM's own `iptables` doesn't add rules to `FORWARD` itself. It puts them in a `DEFAULT_FORWARD` chain that runs after `FORWARD_FIREWALL`. The guard can't move them from there, so on those units the jumps end up after the DSM firewall whatever the setting, and the DSM firewall applies to published ports. To see where they are, run `sudo iptables-save -t filter | grep -E '^-A (FORWARD|DEFAULT_FORWARD) '`.
+
 ## fuse-overlayfs (volumes on `aufs` without overlay support)
 
 Most Synology setups use the `btrfs` storage driver and don't need this. It's for one case: Docker on the `aufs` storage driver (typically an ext4 volume) on a kernel without the `overlay` module, such as some models on kernel 4.4.x. Docker 24+ removed `aufs`, so there's no usable storage driver; the update script stops and tells you if you're in this situation.

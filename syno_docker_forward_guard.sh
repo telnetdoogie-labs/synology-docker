@@ -12,6 +12,10 @@
 #   placement=after-firewall  jumps right after '-j FORWARD_FIREWALL', so traffic must pass the DSM firewall, then
 #                             Docker's rules. Without a FORWARD_FIREWALL jump (DSM firewall off), the same as 'first'.
 #
+# On some units DSM's own iptables does not add a rule to FORWARD itself: it puts it in a DEFAULT_FORWARD chain that
+# FORWARD jumps to, after '-j FORWARD_FIREWALL' (issue #134, seen on a DS220+ with the DSM firewall enabled). The guard
+# cannot move those, so jumps found there count as present whatever the placement, and the DSM firewall runs first.
+#
 # The updater copies this file next to start-stop-status. Run by hand with '--once' to repair the jumps a single time.
 # Must stay POSIX sh: it runs from DSM's startup script.
 
@@ -21,13 +25,23 @@ conf_file=${SYNO_DOCKER_GUARD_CONF:-${0%/*}/../etc/syno_docker_forward_guard.con
 pid_file=${SYNO_DOCKER_GUARD_PID_FILE:-/var/run/syno_docker_forward_guard.pid}
 interval=${SYNO_DOCKER_GUARD_INTERVAL:-2}
 
-# Sets 'rules', 'forward' (FORWARD rules in order, so line N is rule N) and 'firewall' (rule number of the
-# FORWARD_FIREWALL jump, empty without one) from '<tool>-save'. iptables-save is used because 'iptables -C' has given
+# Sets 'rules', 'forward' (FORWARD rules in order, so line N is rule N), 'firewall' (rule number of the
+# FORWARD_FIREWALL jump, empty without one) and 'default_forward' (DEFAULT_FORWARD rules, empty unless FORWARD jumps to
+# that chain) from '<tool>-save'. iptables-save is used because 'iptables -C' has given
 # wrong answers on DSM.
 read_forward() {
   rules=$("$1-save" -t filter 2>/dev/null) || return 1
   forward=$(printf '%s\n' "$rules" | grep '^-A FORWARD ')
   firewall=$(rule_numbers FORWARD_FIREWALL | head -n 1)
+  default_forward=''
+  if [ -n "$(rule_numbers DEFAULT_FORWARD)" ]; then
+    default_forward=$(printf '%s\n' "$rules" | grep '^-A DEFAULT_FORWARD ')
+  fi
+}
+
+# Whether DSM's iptables put the jump to a chain in DEFAULT_FORWARD, which FORWARD jumps to.
+in_default_forward() {
+  printf '%s\n' "$default_forward" | grep -qx -- "-A DEFAULT_FORWARD -j $1"
 }
 
 # Rule numbers of the FORWARD jumps to a chain, one per line.
@@ -84,7 +98,7 @@ ensure_jumps() {
     start=$firewall
   fi
   user=$(placed_jump DOCKER-USER)
-  if [ -z "$user" ] && printf '%s\n' "$rules" | grep -q '^:DOCKER-USER '; then
+  if [ -z "$user" ] && ! in_default_forward DOCKER-USER && printf '%s\n' "$rules" | grep -q '^:DOCKER-USER '; then
     user=$((start + 1))
     "$tool" -I FORWARD "$user" -j DOCKER-USER || return 1
     # Everything from that position on moved down one.
@@ -95,7 +109,7 @@ ensure_jumps() {
 -A FORWARD -j DOCKER-USER")
     [ -n "$forward" ] || forward='-A FORWARD -j DOCKER-USER'
   fi
-  if [ -z "$(placed_jump DOCKER-FORWARD)" ]; then
+  if [ -z "$(placed_jump DOCKER-FORWARD)" ] && ! in_default_forward DOCKER-FORWARD; then
     "$tool" -I FORWARD $((${user:-$start} + 1)) -j DOCKER-FORWARD || return 1
   fi
   return 0
@@ -123,8 +137,10 @@ fi
 echo "$$" > "$pid_file" || exit 1
 
 checker_pid=''
+events_pid=''
 cleanup() {
   [ -n "$checker_pid" ] && kill "$checker_pid" 2>/dev/null
+  [ -n "$events_pid" ] && kill "$events_pid" 2>/dev/null
   rm -f "$pid_file"
 }
 trap cleanup EXIT
@@ -140,7 +156,8 @@ docker_answers() {
 }
 
 # 'docker events' runs for as long as dockerd does, so the guard's lifetime follows the daemon's. If it ends while
-# dockerd still answers (a dropped connection, not a stop), the guard keeps going.
+# dockerd still answers (a dropped connection, not a stop), the guard keeps going. It runs in the background with
+# 'wait' so that a signal stops the guard at once: sh holds a trap back until a foreground command returns.
 while :; do
   (
     while :; do
@@ -149,7 +166,10 @@ while :; do
     done
   ) &
   checker_pid=$!
-  "$docker_bin" events --format '{{.Type}}' >/dev/null 2>&1
+  "$docker_bin" events --format '{{.Type}}' >/dev/null 2>&1 &
+  events_pid=$!
+  wait "$events_pid"
+  events_pid=''
   kill "$checker_pid" 2>/dev/null
   checker_pid=''
   sleep "$interval"

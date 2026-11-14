@@ -16,7 +16,8 @@
 # own MAC address, and these kernels do not record an address given at creation as one of the bridge's own. The bridge
 # then drops every frame sent to it, so containers cannot reach their gateway, the LAN or the internet, and the NAS
 # cannot reach them (issue #116). Changing the address and changing it back makes the kernel record it. Each bridge
-# (docker0 and Docker's br-<network id>) is done once, including the ones created while dockerd runs.
+# (docker0, Docker's br-<network id> and DSM's docker-<network id>) is done once, including the ones created while
+# dockerd runs.
 #
 # The updater copies this file next to start-stop-status. Run by hand with '--once' to repair the jumps, and on 3.x
 # kernels every Docker bridge, a single time.
@@ -132,11 +133,15 @@ ensure_bridge_addresses() {
     3.*) ;;
     *) return 0 ;;
   esac
-  for bridge_dir in "$sys_net"/docker0 "$sys_net"/br-????????????; do
+  for bridge_dir in "$sys_net"/docker0 "$sys_net"/br-???????????? "$sys_net"/docker-?*; do
     [ -d "$bridge_dir/bridge" ] || continue
     bridge=${bridge_dir##*/}
-    # Only Docker's own bridges: docker0, and 'br-' followed by the first 12 characters of a network ID.
-    case ${bridge#br-} in
+    # Only Docker's own bridges: docker0, and a network's bridge, named after the start of its network ID. That is
+    # 'br-<12 characters>' from Docker, and 'docker-<8 characters>' for networks created by DSM's Docker package,
+    # which keep that name after the update.
+    network=${bridge#br-}
+    network=${network#docker-}
+    case $network in
       *[!0-9a-f]*) [ "$bridge" = docker0 ] || continue ;;
     esac
     address=$(cat "$bridge_dir/address" 2>/dev/null) || continue

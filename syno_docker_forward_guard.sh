@@ -15,6 +15,7 @@
 # On some units DSM's own iptables does not add a rule to FORWARD itself: it puts it in a DEFAULT_FORWARD chain that
 # FORWARD jumps to, after '-j FORWARD_FIREWALL' (issue #134, seen on a DS220+ with the DSM firewall enabled). The guard
 # cannot move those, so jumps found there count as present whatever the placement, and the DSM firewall runs first.
+# DSM's iptables counts an insert position within DEFAULT_FORWARD, and redirects '-D' there too.
 #
 # The updater copies this file next to start-stop-status. Run by hand with '--once' to repair the jumps a single time.
 # Must stay POSIX sh: it runs from DSM's startup script.
@@ -39,9 +40,10 @@ read_forward() {
   fi
 }
 
-# Whether DSM's iptables put the jump to a chain in DEFAULT_FORWARD, which FORWARD jumps to.
-in_default_forward() {
-  printf '%s\n' "$default_forward" | grep -qx -- "-A DEFAULT_FORWARD -j $1"
+# Rule number, within DEFAULT_FORWARD, of the jump to a chain that DSM's iptables put there; empty if there is none or
+# FORWARD does not jump to DEFAULT_FORWARD.
+default_forward_number() {
+  printf '%s\n' "$default_forward" | grep -nx -- "-A DEFAULT_FORWARD -j $1" | head -n 1 | cut -d: -f1
 }
 
 # Rule numbers of the FORWARD jumps to a chain, one per line.
@@ -98,7 +100,16 @@ ensure_jumps() {
     start=$firewall
   fi
   user=$(placed_jump DOCKER-USER)
-  if [ -z "$user" ] && ! in_default_forward DOCKER-USER && printf '%s\n' "$rules" | grep -q '^:DOCKER-USER '; then
+  docker_forward=$(placed_jump DOCKER-FORWARD)
+  # When one jump is already in DEFAULT_FORWARD, the other goes next to it there, in Docker's order: DOCKER-USER takes
+  # DOCKER-FORWARD's position (pushing it down one), DOCKER-FORWARD goes right after DOCKER-USER.
+  default_user=$(default_forward_number DOCKER-USER)
+  default_docker_forward=$(default_forward_number DOCKER-FORWARD)
+  if [ -z "$user" ] && [ -z "$default_user" ] && printf '%s\n' "$rules" | grep -q '^:DOCKER-USER '; then
+    if [ -z "$docker_forward" ] && [ -n "$default_docker_forward" ]; then
+      "$tool" -I FORWARD "$default_docker_forward" -j DOCKER-USER || return 1
+      return 0
+    fi
     user=$((start + 1))
     "$tool" -I FORWARD "$user" -j DOCKER-USER || return 1
     # Everything from that position on moved down one.
@@ -109,8 +120,12 @@ ensure_jumps() {
 -A FORWARD -j DOCKER-USER")
     [ -n "$forward" ] || forward='-A FORWARD -j DOCKER-USER'
   fi
-  if [ -z "$(placed_jump DOCKER-FORWARD)" ] && ! in_default_forward DOCKER-FORWARD; then
-    "$tool" -I FORWARD $((${user:-$start} + 1)) -j DOCKER-FORWARD || return 1
+  if [ -z "$docker_forward" ] && [ -z "$default_docker_forward" ]; then
+    if [ -z "$user" ] && [ -n "$default_user" ]; then
+      "$tool" -I FORWARD $((default_user + 1)) -j DOCKER-FORWARD || return 1
+    else
+      "$tool" -I FORWARD $((${user:-$start} + 1)) -j DOCKER-FORWARD || return 1
+    fi
   fi
   return 0
 }

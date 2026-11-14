@@ -1,5 +1,5 @@
 #!/bin/bash
-# Mock iptables, ip6tables, their -save tools and docker for syno_docker_forward_guard.sh cases.
+# Mock iptables, ip6tables, their -save tools, ip, sysfs and docker for syno_docker_forward_guard.sh cases.
 # Source after test_env.sh. The guard runs under /bin/sh, as it does from DSM's startup script.
 # shellcheck disable=SC2154,SC2034
 
@@ -16,6 +16,13 @@ prepare_forward_guard_fixture() {
   export SYNO_DOCKER_GUARD_PID_FILE="$test_tmp_dir/guard.pid"
   export SYNO_DOCKER_GUARD_DOCKER="$guard_bin/docker"
   export SYNO_DOCKER_GUARD_INTERVAL=1
+  # A kernel that needs no bridge repair, whatever the test host runs; cases about the repair set a 3.x one.
+  export SYNO_DOCKER_GUARD_KERNEL='4.4.302+'
+  export SYNO_DOCKER_GUARD_SYS_NET="$test_tmp_dir/sys-net"
+  export SYNO_DOCKER_GUARD_BRIDGE_STATE="$test_tmp_dir/guard.bridges"
+  export IP_LOG="$test_tmp_dir/ip.log"
+  mkdir -p "$SYNO_DOCKER_GUARD_SYS_NET"
+  : > "$IP_LOG"
   : > "$IPTABLES_LOG"
   : > "$IP6TABLES_LOG"
 
@@ -42,6 +49,16 @@ fi
 EOF
     chmod +x "$guard_bin/$tool" "$guard_bin/$tool-save"
   done
+
+  # 'ip link set dev <name> address <mac>' is logged and applied to the fake sysfs, as the kernel would.
+  cat > "$guard_bin/ip" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$IP_LOG"
+[ "$1 $2 $3 $5" = 'link set dev address' ] || exit 1
+[ -d "$SYNO_DOCKER_GUARD_SYS_NET/$4" ] || exit 1
+echo "$6" > "$SYNO_DOCKER_GUARD_SYS_NET/$4/address"
+EOF
+  chmod +x "$guard_bin/ip"
 
   # 'events' blocks while dockerd is "up" (DOCKER_EVENTS_MODE=block) or returns at once when it has stopped.
   cat > "$guard_bin/docker" <<'EOF'
@@ -81,6 +98,16 @@ write_filter_table() {
 # The IPv4 table the second iptables-save call sees, after the guard has deleted misplaced jumps.
 write_filter_table_after_delete() {
   write_table "$IPTABLES_SAVE_OUTPUT.2" "$@"
+}
+
+# Adds a network device to the fake sysfs: name, ifindex, MAC address, and 'bridge' for a bridge device.
+add_net_device() {
+  mkdir -p "$SYNO_DOCKER_GUARD_SYS_NET/$1"
+  echo "$2" > "$SYNO_DOCKER_GUARD_SYS_NET/$1/ifindex"
+  echo "$3" > "$SYNO_DOCKER_GUARD_SYS_NET/$1/address"
+  if [ "${4:-}" = bridge ]; then
+    mkdir -p "$SYNO_DOCKER_GUARD_SYS_NET/$1/bridge"
+  fi
 }
 
 set_placement() {

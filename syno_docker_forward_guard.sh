@@ -15,7 +15,8 @@
 # On some units DSM's own iptables does not add a rule to FORWARD itself: it puts it in a DEFAULT_FORWARD chain that
 # FORWARD jumps to, after '-j FORWARD_FIREWALL' (issue #134, seen on a DS220+ with the DSM firewall enabled). The guard
 # cannot move those, so jumps found there count as present whatever the placement, and the DSM firewall runs first.
-# DSM's iptables counts an insert position within DEFAULT_FORWARD, and redirects '-D' there too.
+# DSM's iptables counts an insert position within DEFAULT_FORWARD, and redirects '-D' there too. After a rewrite DSM
+# has removed DEFAULT_FORWARD, so the first insert lands in a new, empty chain.
 #
 # The updater copies this file next to start-stop-status. Run by hand with '--once' to repair the jumps a single time.
 # Must stay POSIX sh: it runs from DSM's startup script.
@@ -71,6 +72,20 @@ placed_jump() {
   done
 }
 
+# Inserts a jump to chain $2 at FORWARD position $3 with tool $1, and sets 'inserted_at' to where it went. When DSM's
+# iptables redirects the insert into a new, empty DEFAULT_FORWARD (hooked after FORWARD_FIREWALL), any position after
+# the first is out of range there, so it tries position 1 instead; the jump still ends up after the DSM firewall.
+insert_jump() {
+  inserted_at=$3
+  insert_error=$("$1" -I FORWARD "$3" -j "$2" 2>&1) && return 0
+  case "$insert_error" in
+    *'Index of insertion too big'*) [ "$3" -gt 1 ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  inserted_at=1
+  "$1" -I FORWARD 1 -j "$2"
+}
+
 # Puts back whichever jump is missing, in Docker's order (DOCKER-USER first, DOCKER-FORWARD right after it) and at the
 # chosen placement. A jump on the wrong side of FORWARD_FIREWALL is removed, every copy of it, then inserted again.
 ensure_jumps() {
@@ -110,8 +125,8 @@ ensure_jumps() {
       "$tool" -I FORWARD "$default_docker_forward" -j DOCKER-USER || return 1
       return 0
     fi
-    user=$((start + 1))
-    "$tool" -I FORWARD "$user" -j DOCKER-USER || return 1
+    insert_jump "$tool" DOCKER-USER $((start + 1)) || return 1
+    user=$inserted_at
     # Everything from that position on moved down one.
     if [ -n "$firewall" ] && [ "$firewall" -ge "$user" ]; then
       firewall=$((firewall + 1))
@@ -124,7 +139,7 @@ ensure_jumps() {
     if [ -z "$user" ] && [ -n "$default_user" ]; then
       "$tool" -I FORWARD $((default_user + 1)) -j DOCKER-FORWARD || return 1
     else
-      "$tool" -I FORWARD $((${user:-$start} + 1)) -j DOCKER-FORWARD || return 1
+      insert_jump "$tool" DOCKER-FORWARD $((${user:-$start} + 1)) || return 1
     fi
   fi
   return 0

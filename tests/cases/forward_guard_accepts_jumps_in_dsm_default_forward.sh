@@ -51,3 +51,15 @@ write_filter_table '-A FORWARD -j FORWARD_FIREWALL' '-A DEFAULT_FORWARD -j DOCKE
 # Act/expect: unreachable jumps do not count, so both are restored.
 run_guard_once
 expect_eq $'-I FORWARD 1 -j DOCKER-USER\n-I FORWARD 2 -j DOCKER-FORWARD' "$(cat "$IPTABLES_LOG")" 'unhooked DEFAULT_FORWARD does not count'
+
+# Arrange: placement after the DSM firewall, and DSM has just rewritten the table, removing DEFAULT_FORWARD. Its
+# iptables will redirect the next insert into a new, empty DEFAULT_FORWARD (issue #134, DS220+).
+set_placement 'placement=after-firewall'
+export DSM_REDIRECT_TO_EMPTY_CHAIN=1
+write_filter_table '-A FORWARD -j FORWARD_FIREWALL'
+
+# Act/expect: position 2 is out of range there, so DOCKER-USER goes in at 1 and DOCKER-FORWARD right after it.
+run_guard_once
+expect_eq $'-I FORWARD 2 -j DOCKER-USER\n-I FORWARD 1 -j DOCKER-USER\n-I FORWARD 2 -j DOCKER-FORWARD' \
+  "$(cat "$IPTABLES_LOG")" 'jumps restored into a new DEFAULT_FORWARD after the firewall'
+unset DSM_REDIRECT_TO_EMPTY_CHAIN

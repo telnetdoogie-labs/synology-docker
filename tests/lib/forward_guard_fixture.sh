@@ -34,7 +34,19 @@ prepare_forward_guard_fixture() {
       log=IP6TABLES_LOG
       output=IP6TABLES_SAVE_OUTPUT
     fi
-    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$%s"\n' "$log" > "$guard_bin/$tool"
+    # With DSM_REDIRECT_TO_EMPTY_CHAIN=1, an insert past the end of a new, empty DEFAULT_FORWARD fails as on DSM.
+    cat > "$guard_bin/$tool" <<MOCK
+#!/bin/sh
+printf '%s\\n' "\$*" >> "\$$log"
+if [ "\${DSM_REDIRECT_TO_EMPTY_CHAIN:-}" = 1 ] && [ "\$1" = -I ]; then
+  count=\$(cat "\$$log.chain" 2>/dev/null || echo 0)
+  if [ "\$3" -gt \$((count + 1)) ]; then
+    echo 'iptables: Index of insertion too big.' >&2
+    exit 1
+  fi
+  echo \$((count + 1)) > "\$$log.chain"
+fi
+MOCK
     # The Nth call prints <output>.N when that file exists (the table after a delete), else <output>.
     cat > "$guard_bin/$tool-save" <<EOF
 #!/bin/sh
@@ -90,7 +102,7 @@ write_table() {
 }
 
 write_filter_table() {
-  rm -f "$IPTABLES_SAVE_OUTPUT".[0-9]
+  rm -f "$IPTABLES_SAVE_OUTPUT".[0-9] "$IPTABLES_LOG.chain"
   write_table "$IPTABLES_SAVE_OUTPUT" "$@"
   : > "$IPTABLES_LOG"
 }

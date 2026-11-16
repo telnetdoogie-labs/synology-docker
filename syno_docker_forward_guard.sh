@@ -12,6 +12,12 @@
 #   placement=after-firewall  jumps right after '-j FORWARD_FIREWALL', so traffic must pass the DSM firewall, then
 #                             Docker's rules. Without a FORWARD_FIREWALL jump (DSM firewall off), the same as 'first'.
 #
+# On some units DSM's own iptables does not add a rule to FORWARD itself: it puts it in a DEFAULT_FORWARD chain that
+# FORWARD jumps to, after '-j FORWARD_FIREWALL' (issue #134, seen on a DS220+ with the DSM firewall enabled). The guard
+# cannot move those, so jumps found there count as present whatever the placement, and the DSM firewall runs first.
+# DSM's iptables counts an insert position within DEFAULT_FORWARD, and redirects '-D' there too. After a rewrite DSM
+# has removed DEFAULT_FORWARD, so the first insert lands in a new, empty chain.
+#
 # On 3.x kernels (DSM models still on 3.10) the guard also repairs Docker's bridges. Docker creates each bridge with its
 # own MAC address, and these kernels do not record an address given at creation as one of the bridge's own. The bridge
 # then drops every frame sent to it, so containers cannot reach their gateway, the LAN or the internet, and the NAS
@@ -33,13 +39,24 @@ sys_net=${SYNO_DOCKER_GUARD_SYS_NET:-/sys/class/net}
 # Bridges already repaired, one '<name> <ifindex> <address>' per line. A recreated bridge gets a new ifindex.
 bridge_state=${SYNO_DOCKER_GUARD_BRIDGE_STATE:-/var/run/syno_docker_forward_guard.bridges}
 
-# Sets 'rules', 'forward' (FORWARD rules in order, so line N is rule N) and 'firewall' (rule number of the
-# FORWARD_FIREWALL jump, empty without one) from '<tool>-save'. iptables-save is used because 'iptables -C' has given
+# Sets 'rules', 'forward' (FORWARD rules in order, so line N is rule N), 'firewall' (rule number of the
+# FORWARD_FIREWALL jump, empty without one) and 'default_forward' (DEFAULT_FORWARD rules, empty unless FORWARD jumps to
+# that chain) from '<tool>-save'. iptables-save is used because 'iptables -C' has given
 # wrong answers on DSM.
 read_forward() {
   rules=$("$1-save" -t filter 2>/dev/null) || return 1
   forward=$(printf '%s\n' "$rules" | grep '^-A FORWARD ')
   firewall=$(rule_numbers FORWARD_FIREWALL | head -n 1)
+  default_forward=''
+  if [ -n "$(rule_numbers DEFAULT_FORWARD)" ]; then
+    default_forward=$(printf '%s\n' "$rules" | grep '^-A DEFAULT_FORWARD ')
+  fi
+}
+
+# Rule number, within DEFAULT_FORWARD, of the jump to a chain that DSM's iptables put there; empty if there is none or
+# FORWARD does not jump to DEFAULT_FORWARD.
+default_forward_number() {
+  printf '%s\n' "$default_forward" | grep -nx -- "-A DEFAULT_FORWARD -j $1" | head -n 1 | cut -d: -f1
 }
 
 # Rule numbers of the FORWARD jumps to a chain, one per line.
@@ -65,6 +82,20 @@ placed_jump() {
       return
     fi
   done
+}
+
+# Inserts a jump to chain $2 at FORWARD position $3 with tool $1, and sets 'inserted_at' to where it went. When DSM's
+# iptables redirects the insert into a new, empty DEFAULT_FORWARD (hooked after FORWARD_FIREWALL), any position after
+# the first is out of range there, so it tries position 1 instead; the jump still ends up after the DSM firewall.
+insert_jump() {
+  inserted_at=$3
+  insert_error=$("$1" -I FORWARD "$3" -j "$2" 2>&1) && return 0
+  case "$insert_error" in
+    *'Index of insertion too big'*) [ "$3" -gt 1 ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  inserted_at=1
+  "$1" -I FORWARD 1 -j "$2"
 }
 
 # Puts back whichever jump is missing, in Docker's order (DOCKER-USER first, DOCKER-FORWARD right after it) and at the
@@ -96,9 +127,18 @@ ensure_jumps() {
     start=$firewall
   fi
   user=$(placed_jump DOCKER-USER)
-  if [ -z "$user" ] && printf '%s\n' "$rules" | grep -q '^:DOCKER-USER '; then
-    user=$((start + 1))
-    "$tool" -I FORWARD "$user" -j DOCKER-USER || return 1
+  docker_forward=$(placed_jump DOCKER-FORWARD)
+  # When one jump is already in DEFAULT_FORWARD, the other goes next to it there, in Docker's order: DOCKER-USER takes
+  # DOCKER-FORWARD's position (pushing it down one), DOCKER-FORWARD goes right after DOCKER-USER.
+  default_user=$(default_forward_number DOCKER-USER)
+  default_docker_forward=$(default_forward_number DOCKER-FORWARD)
+  if [ -z "$user" ] && [ -z "$default_user" ] && printf '%s\n' "$rules" | grep -q '^:DOCKER-USER '; then
+    if [ -z "$docker_forward" ] && [ -n "$default_docker_forward" ]; then
+      "$tool" -I FORWARD "$default_docker_forward" -j DOCKER-USER || return 1
+      return 0
+    fi
+    insert_jump "$tool" DOCKER-USER $((start + 1)) || return 1
+    user=$inserted_at
     # Everything from that position on moved down one.
     if [ -n "$firewall" ] && [ "$firewall" -ge "$user" ]; then
       firewall=$((firewall + 1))
@@ -107,8 +147,12 @@ ensure_jumps() {
 -A FORWARD -j DOCKER-USER")
     [ -n "$forward" ] || forward='-A FORWARD -j DOCKER-USER'
   fi
-  if [ -z "$(placed_jump DOCKER-FORWARD)" ]; then
-    "$tool" -I FORWARD $((${user:-$start} + 1)) -j DOCKER-FORWARD || return 1
+  if [ -z "$docker_forward" ] && [ -z "$default_docker_forward" ]; then
+    if [ -z "$user" ] && [ -n "$default_user" ]; then
+      "$tool" -I FORWARD $((default_user + 1)) -j DOCKER-FORWARD || return 1
+    else
+      insert_jump "$tool" DOCKER-FORWARD $((${user:-$start} + 1)) || return 1
+    fi
   fi
   return 0
 }
@@ -185,8 +229,10 @@ echo "$$" > "$pid_file" || exit 1
 : > "$bridge_state" || exit 1
 
 checker_pid=''
+events_pid=''
 cleanup() {
   [ -n "$checker_pid" ] && kill "$checker_pid" 2>/dev/null
+  [ -n "$events_pid" ] && kill "$events_pid" 2>/dev/null
   rm -f "$pid_file" "$bridge_state"
 }
 trap cleanup EXIT
@@ -202,7 +248,8 @@ docker_answers() {
 }
 
 # 'docker events' runs for as long as dockerd does, so the guard's lifetime follows the daemon's. If it ends while
-# dockerd still answers (a dropped connection, not a stop), the guard keeps going.
+# dockerd still answers (a dropped connection, not a stop), the guard keeps going. It runs in the background with
+# 'wait' so that a signal stops the guard at once: sh holds a trap back until a foreground command returns.
 while :; do
   (
     while :; do
@@ -212,7 +259,10 @@ while :; do
     done
   ) &
   checker_pid=$!
-  "$docker_bin" events --format '{{.Type}}' >/dev/null 2>&1
+  "$docker_bin" events --format '{{.Type}}' >/dev/null 2>&1 &
+  events_pid=$!
+  wait "$events_pid"
+  events_pid=''
   kill "$checker_pid" 2>/dev/null
   checker_pid=''
   sleep "$interval"

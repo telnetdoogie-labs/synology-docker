@@ -106,16 +106,32 @@ wait_for_network_settle() {
 }
 
 internal_network_isolated() {
-  # ping exits 1 when the target cannot be reached.
-  # Exit 125 would mean Docker itself failed to run the probe.
+  # Match the reported failure mode: a default-bridge client must not
+  # complete a TCP/HTTP request to an --internal-network service.
   docker run --rm --network bridge "$BUSYBOX_IMAGE" \
-    ping -c 1 -W 2 "$INTERNAL_IP" >/dev/null 2>&1
+    wget -T 3 -qO- "http://${INTERNAL_IP}/" >/dev/null 2>&1
 
   case $? in
-    1) return 0 ;; # Correct: the default bridge cannot reach the internal network.
     0) return 1 ;; # Incorrect: the default bridge reached the internal network.
-    *) return 2 ;; # Harness error, not proof of isolation.
+    125) return 2 ;; # Docker could not run the probe; do not call that isolation.
+    *) return 0 ;; # Correct: the HTTP connection could not be completed.
   esac
+}
+
+wait_for_internal_web() {
+  local attempt
+
+  # Do not mistake a still-starting Nginx process for network isolation.
+  # This confirms only that the target is serving HTTP in its own namespace.
+  for attempt in {1..10}; do
+    if docker exec "$INTERNAL_WEB" \
+        wget -T 1 -qO- http://127.0.0.1/ >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  return 1
 }
 
 host_reaches_published_port() {
@@ -154,11 +170,37 @@ fi
 
 printf 'Creating temporary networks and containers...\n'
 if ! docker network create --internal "$INTERNAL_NETWORK" >/dev/null 2>&1 ||
-   ! docker network create "$FORWARDED_NETWORK" >/dev/null 2>&1 ||
+   ! docker run -d --rm --name "$INTERNAL_WEB" \
+       --network "$INTERNAL_NETWORK" "$NGINX_IMAGE" >/dev/null 2>&1; then
+  printf '❌ Could not create the temporary internal-network test resources.\n' >&2
+  exit 2
+fi
+
+INTERNAL_IP="$(
+  docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+    "$INTERNAL_WEB"
+)"
+
+if [ -z "$INTERNAL_IP" ]; then
+  printf '❌ Could not determine the temporary internal container IP.\n' >&2
+  exit 2
+fi
+
+printf 'Waiting for the internal test web server to become ready...\n'
+if ! wait_for_internal_web; then
+  printf '❌ The temporary internal test web server did not become ready.\n' >&2
+  exit 2
+fi
+
+printf 'Running immediate internal-network check...\n'
+result \
+  'Internal network is immediately isolated from the default bridge' \
+  internal_network_isolated
+
+printf 'Creating remaining temporary networks and containers...\n'
+if ! docker network create "$FORWARDED_NETWORK" >/dev/null 2>&1 ||
    ! docker network create "$UNFORWARDED_NETWORK" >/dev/null 2>&1 ||
    ! docker network create "$SHARED_NETWORK" >/dev/null 2>&1 ||
-   ! docker run -d --rm --name "$INTERNAL_WEB" \
-       --network "$INTERNAL_NETWORK" "$NGINX_IMAGE" >/dev/null 2>&1 ||
    ! docker run -d --rm --name "$FORWARDED_WEB" \
        --network "$FORWARDED_NETWORK" \
        -p 127.0.0.1::80 \
@@ -173,18 +215,12 @@ if ! docker network create --internal "$INTERNAL_NETWORK" >/dev/null 2>&1 ||
   exit 2
 fi
 
-INTERNAL_IP="$(
-  docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-    "$INTERNAL_WEB"
-)"
-
 FORWARDED_BINDING="$(docker port "$FORWARDED_WEB" 80/tcp 2>/dev/null)"
 FORWARDED_PORT="${FORWARDED_BINDING##*:}"
 
-if [ -z "$INTERNAL_IP" ] ||
-   [ -z "$FORWARDED_BINDING" ] ||
+if [ -z "$FORWARDED_BINDING" ] ||
    [ "$FORWARDED_PORT" = "$FORWARDED_BINDING" ]; then
-  printf '❌ Could not determine the temporary container IP or published port.\n' >&2
+  printf '❌ Could not determine the temporary published port.\n' >&2
   exit 2
 fi
 
@@ -192,7 +228,7 @@ wait_for_network_settle
 
 printf 'Running connectivity checks...\n'
 result \
-  'Internal network is isolated from the default bridge' \
+  'Internal network remains isolated after Docker/DSM events settle' \
   internal_network_isolated
 
 result \

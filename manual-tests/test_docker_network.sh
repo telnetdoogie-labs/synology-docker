@@ -204,8 +204,11 @@ container_has_no_published_port() {
 
 same_network_containers_reach_each_other() {
   # User-defined bridge networks provide scoped Docker DNS.
+  # The longer timeout leaves room on slow hosts for name resolution, which
+  # can take two round trips when the host's search domain is inherited
+  # (see #141). A real reachability failure still fails.
   docker run --rm --network "$SHARED_NETWORK" "$BUSYBOX_IMAGE" \
-    wget -T 3 -qO- "http://${SHARED_WEB}/" >/dev/null 2>&1
+    wget -T 10 -qO- "http://${SHARED_WEB}/" >/dev/null 2>&1
 }
 
 container_reaches_outside() {
